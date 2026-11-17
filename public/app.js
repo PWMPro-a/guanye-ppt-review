@@ -28,9 +28,10 @@ let selectedFiles = [], importMode = 'new', importBusy = false, restoreFile;
 const modal = $('#modal'), lightbox = $('#lightbox');
 const review = id => state.reviews[id] || { scores: {}, note: '', favorite: false };
 const hasScore = n => typeof n === 'number' && Number.isFinite(n);
-const scoreValues = id => state.dimensions.map(d => review(id).scores[d.id]).filter(hasScore);
-const completed = id => state.dimensions.every(d => hasScore(review(id).scores[d.id]));
-const average = id => { const a = scoreValues(id); return a.length ? a.reduce((s,n)=>s+n,0)/a.length : null; };
+const reviewStats = id => Scoring.stats(review(id),decks.find(d=>d.id===id),state.dimensions);
+const scoreValues = id => reviewStats(id).values;
+const completed = id => reviewStats(id).complete;
+const average = id => reviewStats(id).mean;
 const fmt = n => n == null ? '—' : Number(n.toFixed(2)).toString();
 const activeDeck = () => decks.find(d => d.id === activeId);
 const statusText = id => completed(id) ? '已评分' : scoreValues(id).length ? '评分中' : '待评分';
@@ -49,6 +50,19 @@ function toast(message, error = false) {
 function mutableReview(id) {
   if (!state.reviews[id]) state.reviews[id] = {scores:{},note:'',favorite:false};
   return state.reviews[id];
+}
+function currentEntry(create=false) {
+  const r=create?mutableReview(activeId):review(activeId);
+  if(Scoring.mode(r)!=='page')return r;
+  const image=activeDeck().images[slide];
+  if(!create)return Scoring.page(r,image);
+  r.pages ||= {};
+  return r.pages[image.id] ||= {scores:{},note:''};
+}
+function setScoringMode(mode) {
+  const r=mutableReview(activeId);r.mode=mode==='page'?'page':'deck';
+  r.updatedAt=new Date().toISOString();overview=false;queueSave();renderDetail();
+  $('.sidebar').outerHTML=sidebar();if(window.Cloud)decorateCloud();
 }
 function setSaveStatus(text, error = false) {
   if(window.Cloud)text=text.replace('到本地','到云端');
@@ -109,7 +123,7 @@ function gallery() {
   const done = decks.filter(d=>completed(d.id)).length;
   const list = filtered();
   const title = {all:'作品库',pending:'待评分',rated:'已评分',favorites:'我的收藏'}[view];
-  return '<section class="library-head"><div><div class="eyebrow">THE PRESENTATION COLLECTION</div><h1>'+title+'<span class="title-dot">.</span></h1><p>从视觉到排版，记录你对每一套设计的判断。</p></div><button class="button primary" data-action="import">'+icon('plus')+'导入作品</button></section><section class="collection-summary"><div class="summary-item"><b>'+decks.length+'</b><span>套作品</span></div><div class="summary-item"><b>'+decks.reduce((n,d)=>n+d.images.length,0)+'</b><span>张灵感切片</span></div><div class="summary-item"><b>'+done+'</b><span>套已完成评分</span></div><div class="summary-rule"></div><div class="scoring-summary"><span>当前评分标准</span><b>'+state.dimensions.map(d=>esc(d.name)).join('<i> / </i>')+'<small>'+state.maxScore+' 分制</small></b></div><button class="icon-button" data-action="settings" aria-label="修改评分标准">'+icon('settings')+'</button></section>'+(!sourceAvailable?'<div class="source-warning">原图片文件夹暂不可用。请检查文件夹位置，或点击“导入作品”添加图片。</div>':'')+'<div class="filterbar"><label class="search-field">'+icon('search')+'<input id="search" type="search" placeholder="搜索作品、风格或备注…" aria-label="搜索作品" value="'+esc(query)+'"><kbd>/</kbd></label><div class="filter-controls"><select id="style-filter" aria-label="风格筛选"><option value="">全部风格</option>'+['蓝','青','绿','红','棕','米','黑','灰','紫'].map(x=>'<option value="'+x+'" '+(styleFilter===x?'selected':'')+'>'+x+'色系</option>').join('')+'</select><select id="sort" aria-label="作品排序">'+[['default','默认排序'],['high','评分从高到低'],['low','评分从低到高'],['recent','最近评分'],['name','名称排序']].map(([v,n])=>'<option value="'+v+'" '+(sort===v?'selected':'')+'>'+n+'</option>').join('')+'</select><div class="layout-toggle"><button class="'+(layout==='grid'?'selected':'')+'" data-layout="grid" aria-label="网格视图">'+icon('library')+'</button><button class="'+(layout==='list'?'selected':'')+'" data-layout="list" aria-label="紧凑视图">'+icon('list')+'</button></div></div></div><div class="results-line"><span id="result-count">共 '+list.length+' 套作品</span><span>评分针对整套 PPT · 自动保存</span></div><section id="deck-grid" class="deck-grid '+(layout==='list'?'compact':'')+'" aria-label="PPT作品列表">'+(list.length?list.map(card).join(''):emptyState())+'</section><footer class="library-footer"><span>观页 · 让好设计有迹可循</span><span>图片保留原始比例</span></footer>';
+  return '<section class="library-head"><div><div class="eyebrow">THE PRESENTATION COLLECTION</div><h1>'+title+'<span class="title-dot">.</span></h1><p>从视觉到排版，记录你对每一套设计的判断。</p></div><button class="button primary" data-action="import">'+icon('plus')+'导入作品</button></section><section class="collection-summary"><div class="summary-item"><b>'+decks.length+'</b><span>套作品</span></div><div class="summary-item"><b>'+decks.reduce((n,d)=>n+d.images.length,0)+'</b><span>张灵感切片</span></div><div class="summary-item"><b>'+done+'</b><span>套已完成评分</span></div><div class="summary-rule"></div><div class="scoring-summary"><span>当前评分标准</span><b>'+state.dimensions.map(d=>esc(d.name)).join('<i> / </i>')+'<small>'+state.maxScore+' 分制</small></b></div><button class="icon-button" data-action="settings" aria-label="修改评分标准">'+icon('settings')+'</button></section>'+(!sourceAvailable?'<div class="source-warning">原图片文件夹暂不可用。请检查文件夹位置，或点击“导入作品”添加图片。</div>':'')+'<div class="filterbar"><label class="search-field">'+icon('search')+'<input id="search" type="search" placeholder="搜索作品、风格或备注…" aria-label="搜索作品" value="'+esc(query)+'"><kbd>/</kbd></label><div class="filter-controls"><select id="style-filter" aria-label="风格筛选"><option value="">全部风格</option>'+['蓝','青','绿','红','棕','米','黑','灰','紫'].map(x=>'<option value="'+x+'" '+(styleFilter===x?'selected':'')+'>'+x+'色系</option>').join('')+'</select><select id="sort" aria-label="作品排序">'+[['default','默认排序'],['high','评分从高到低'],['low','评分从低到高'],['recent','最近评分'],['name','名称排序']].map(([v,n])=>'<option value="'+v+'" '+(sort===v?'selected':'')+'>'+n+'</option>').join('')+'</select><div class="layout-toggle"><button class="'+(layout==='grid'?'selected':'')+'" data-layout="grid" aria-label="网格视图">'+icon('library')+'</button><button class="'+(layout==='list'?'selected':'')+'" data-layout="list" aria-label="紧凑视图">'+icon('list')+'</button></div></div></div><div class="results-line"><span id="result-count">共 '+list.length+' 套作品</span><span>支持整套 / 逐页评分 · 自动保存</span></div><section id="deck-grid" class="deck-grid '+(layout==='list'?'compact':'')+'" aria-label="PPT作品列表">'+(list.length?list.map(card).join(''):emptyState())+'</section><footer class="library-footer"><span>观页 · 让好设计有迹可循</span><span>图片保留原始比例</span></footer>';
 }
 function emptyState() { return '<div class="empty-state">'+icon('search')+'<h3>这里暂时没有作品</h3><p>试试其他关键词、切换筛选，或导入一套新作品。</p><button class="button" data-action="reset-filter">查看全部作品</button></div>'; }
 function updateGrid() {
@@ -117,26 +131,27 @@ function updateGrid() {
   $('#deck-grid').className = 'deck-grid '+(layout==='list'?'compact':''); $('#result-count').textContent = '共 '+list.length+' 套作品';
 }
 function scorePanel(d) {
-  const r=review(d.id), avg=average(d.id), done=completed(d.id);
-  return '<aside class="scoring-panel"><div class="panel-heading"><div><span class="eyebrow">YOUR PERSPECTIVE</span><h2>整套评分</h2></div><button class="icon-button" data-action="settings" aria-label="评分设置">'+icon('settings')+'</button></div><div class="overall-score"><div><span class="overall-value">'+fmt(avg)+'</span><span class="overall-max"> / '+state.maxScore+'</span></div><div class="overall-label"><span>'+(done?'综合均分':avg==null?'等待你的评价':'当前均分')+'</span><small>'+scoreValues(d.id).length+' / '+state.dimensions.length+' 项已评</small></div></div><div class="dimension-list">'+state.dimensions.map(dim=>{
+  const r=currentEntry(), perPage=Scoring.mode(review(d.id))==='page', stats=reviewStats(d.id);
+  const values=state.dimensions.map(dim=>r.scores[dim.id]).filter(hasScore), avg=perPage?(values.length?values.reduce((a,b)=>a+b,0)/values.length:null):stats.mean, done=perPage?values.length===state.dimensions.length:stats.complete;
+  return '<aside class="scoring-panel"><div class="panel-heading"><div><span class="eyebrow">YOUR PERSPECTIVE</span><h2>'+(perPage?'第 '+(slide+1)+' 页评分':'整套评分')+'</h2></div><button class="icon-button" data-action="settings" aria-label="评分设置">'+icon('settings')+'</button></div><div class="scoring-mode segmented" aria-label="评分模式"><button data-scoring-mode="deck" class="'+(!perPage?'selected':'')+'">整套评分</button><button data-scoring-mode="page" class="'+(perPage?'selected':'')+'">逐页评分</button></div><p class="mode-description">'+(perPage?'每页独立评分 · 已完成 '+stats.pagesDone+' / '+d.images.length+' 页':'针对整套作品评价 · 切换模式会保留已有评分')+'</p><div class="overall-score"><div><span class="overall-value">'+fmt(avg)+'</span><span class="overall-max"> / '+state.maxScore+'</span></div><div class="overall-label"><span>'+(done?'综合均分':avg==null?'等待你的评价':'当前均分')+'</span><small>'+values.length+' / '+state.dimensions.length+' 项已评</small></div></div><div class="dimension-list">'+state.dimensions.map(dim=>{
     const value=r.scores[dim.id];
     return '<div class="dimension" data-dimension="'+esc(dim.id)+'"><div class="dimension-heading"><label for="score-'+esc(dim.id)+'">'+esc(dim.name)+'</label><div class="numeric-score"><input id="score-'+esc(dim.id)+'" data-score-input="'+esc(dim.id)+'" type="number" min="0" max="'+state.maxScore+'" step="0.1" placeholder="—" value="'+(hasScore(value)?value:'')+'" aria-label="'+esc(dim.name)+'分数"><span>/ '+state.maxScore+'</span></div></div><p>'+esc(dim.description||'为这一维度记录你的判断')+'</p><div class="score-options">'+[1,2,3,4,5].map(n=>{const num=Math.round(state.maxScore*n/5*100)/100;return '<button data-score-dim="'+esc(dim.id)+'" data-score-value="'+num+'" class="'+(hasScore(value)&&Math.abs(value-num)<.001?'chosen':'')+'" aria-label="'+esc(dim.name)+' '+num+' 分">'+fmt(num)+'</button>';}).join('')+'</div><div class="score-range-label"><span>仍有提升空间</span><span>表现出色</span></div></div>';
-  }).join('')+'</div><div class="note-field"><label for="review-note">评审笔记 <span>可选</span></label><textarea id="review-note" maxlength="10000" placeholder="哪些地方值得借鉴？哪些细节可以更好？">'+esc(r.note||'')+'</textarea></div><button class="save-status panel-save" data-action="retry-save"><span class="status-dot"></span>'+(pending?'正在保存…':saveError?'未保存 · 点击重试':'已保存到本地')+'</button><button class="button primary next-review" data-action="next-pending">'+(done?'继续评审下一套':'保存并评下一套')+icon('arrow')+'</button><p class="score-footnote">综合分为当前评分项的等权平均分</p></aside>';
+  }).join('')+'</div><div class="note-field"><label for="review-note">评审笔记 <span>可选</span></label><textarea id="review-note" maxlength="10000" placeholder="哪些地方值得借鉴？哪些细节可以更好？">'+esc(r.note||'')+'</textarea></div><button class="save-status panel-save" data-action="retry-save"><span class="status-dot"></span>'+(pending?'正在保存…':saveError?'未保存 · 点击重试':'已保存到本地')+'</button><button class="button primary next-review" data-action="'+(perPage?'next-page':'next-pending')+'">'+(perPage?(slide<d.images.length-1?'保存并评下一页':'完成并评下一套'):(done?'继续评审下一套':'保存并评下一套'))+icon('arrow')+'</button><p class="score-footnote">'+(perPage?'整套逐页均分 '+fmt(stats.mean)+' · 所有页面完成后计入团队均分':'综合分为当前评分项的等权平均分')+'</p></aside>';
 }
 function stage(d) {
   if (overview) return '<div class="contact-sheet">'+d.images.map((im,i)=>'<button data-preview-slide="'+i+'"><img src="'+im.thumb+'" loading="lazy" alt="'+esc(d.title)+' 第 '+(i+1)+' 张"><span>'+String(i+1).padStart(2,'0')+'</span></button>').join('')+'</div>';
-  return '<div class="preview-stage"><button class="stage-arrow previous" data-action="prev-slide" '+(slide===0?'disabled':'')+' aria-label="上一张">'+icon('left')+'</button><button class="main-image-button" data-action="lightbox" aria-label="放大查看原图"><img id="main-image" src="'+d.images[slide].url+'" alt="'+esc(d.title)+' 第 '+(slide+1)+' 张"></button><button class="stage-arrow next" data-action="next-slide" '+(slide===d.images.length-1?'disabled':'')+' aria-label="下一张">'+icon('right')+'</button><span class="stage-hint">'+icon('expand')+'点击图片，查看细节</span></div><div class="slide-bottom"><span class="slide-position">'+String(slide+1).padStart(2,'0')+' <i>/ '+String(d.images.length).padStart(2,'0')+'</i></span><span class="slide-filename" title="'+esc(d.images[slide].name)+'">'+esc(d.images[slide].name)+'</span><span class="key-help"><kbd>←</kbd><kbd>→</kbd> 切换图片</span></div><div class="thumbnail-strip">'+d.images.map((im,i)=>'<button class="thumbnail '+(i===slide?'current':'')+'" data-slide-index="'+i+'" aria-label="第 '+(i+1)+' 张" aria-current="'+(i===slide)+'"><img src="'+im.thumb+'" alt="" loading="lazy"><span>'+String(i+1).padStart(2,'0')+'</span></button>').join('')+'</div>';
+  return '<div class="preview-stage"><button class="stage-arrow previous" data-action="prev-slide" '+(slide===0?'disabled':'')+' aria-label="上一张">'+icon('left')+'</button><button class="main-image-button" data-action="lightbox" aria-label="放大查看原图"><img id="main-image" src="'+d.images[slide].url+'" alt="'+esc(d.title)+' 第 '+(slide+1)+' 张"></button><button class="stage-arrow next" data-action="next-slide" '+(slide===d.images.length-1?'disabled':'')+' aria-label="下一张">'+icon('right')+'</button><span class="stage-hint">'+icon('expand')+'点击图片，查看细节</span></div><div class="slide-bottom"><span class="slide-position">'+String(slide+1).padStart(2,'0')+' <i>/ '+String(d.images.length).padStart(2,'0')+'</i></span><span class="slide-filename" title="'+esc(d.images[slide].name)+'">'+esc(d.images[slide].name)+'</span><span class="key-help"><kbd>←</kbd><kbd>→</kbd> 切换图片</span></div><div class="thumbnail-strip">'+d.images.map((im,i)=>'<button class="thumbnail '+(i===slide?'current':'')+' '+(Scoring.mode(review(d.id))==='page'&&state.dimensions.every(dim=>hasScore(Scoring.page(review(d.id),im).scores[dim.id]))?'page-rated':'')+'" data-slide-index="'+i+'" aria-label="第 '+(i+1)+' 张" aria-current="'+(i===slide)+'"><img src="'+im.thumb+'" alt="" loading="lazy"><span>'+String(i+1).padStart(2,'0')+'</span></button>').join('')+'</div>';
 }
 function detail() {
   const d=activeDeck(); if(!d) return '<div class="empty-state">作品不存在，请返回作品库。</div>';
   slide=Math.max(0,Math.min(slide,d.images.length-1));
-  return '<div class="detail-breadcrumb"><button class="text-button" data-action="back">'+icon('left')+'返回作品库</button><span>按文件夹整套评审</span></div><div class="detail-heading"><div><span class="style-label">'+esc(d.style)+' <i>·</i> '+d.images.length+' 张图片</span><h1>'+esc(d.title)+'</h1></div><div class="detail-actions"><button class="button '+(review(d.id).favorite?'is-favorite':'')+'" data-favorite="'+d.id+'">'+icon('heart')+(review(d.id).favorite?'已收藏':'收藏作品')+'</button><button class="button" data-action="append">'+icon('plus')+'添加图片</button></div></div><div class="review-layout"><section class="viewer"><div class="viewer-toolbar"><div class="segmented"><button data-overview="false" class="'+(!overview?'selected':'')+'">'+icon('image')+'单图浏览</button><button data-overview="true" class="'+(overview?'selected':'')+'">'+icon('library')+'整套总览</button></div><button class="icon-button" data-action="lightbox" aria-label="放大当前图片">'+icon('expand')+'</button></div><div id="stage-container">'+stage(d)+'</div></section><div id="panel-container">'+scorePanel(d)+'</div></div>';
+  return '<div class="detail-breadcrumb"><button class="text-button" data-action="back">'+icon('left')+'返回作品库</button><span>整套 / 逐页自由切换</span></div><div class="detail-heading"><div><span class="style-label">'+esc(d.style)+' <i>·</i> '+d.images.length+' 张图片</span><h1>'+esc(d.title)+'</h1></div><div class="detail-actions"><button class="button '+(review(d.id).favorite?'is-favorite':'')+'" data-favorite="'+d.id+'">'+icon('heart')+(review(d.id).favorite?'已收藏':'收藏作品')+'</button><button class="button" data-action="append">'+icon('plus')+'添加图片</button></div></div><div class="review-layout"><section class="viewer"><div class="viewer-toolbar"><div class="segmented"><button data-overview="false" class="'+(!overview?'selected':'')+'">'+icon('image')+'单图浏览</button><button data-overview="true" class="'+(overview?'selected':'')+'">'+icon('library')+'整套总览</button></div><button class="icon-button" data-action="lightbox" aria-label="放大当前图片">'+icon('expand')+'</button></div><div id="stage-container">'+stage(d)+'</div></section><div id="panel-container">'+scorePanel(d)+'</div></div>';
 }
 function render() {
   $('#app').innerHTML = sidebar()+'<div class="main-shell">'+topbar()+'<main class="main-content '+(activeId?'detail-content':'')+'">'+(activeId?detail():gallery())+'</main></div>';
   if(window.Cloud)decorateCloud();
 }
-function renderDetail() { const d=activeDeck(); if(d) { $('.main-content').innerHTML=detail(); if(window.Cloud&&Cloud.member.role!=='admin')$$('[data-action="append"]').forEach(el=>el.hidden=true); } }
+function renderDetail() { const d=activeDeck(); if(d) $('.main-content').innerHTML=detail(); }
 let returnScroll=0;
 function openDeck(id, index=0) {
   if(!activeId) returnScroll=window.scrollY;
@@ -149,14 +164,16 @@ function changeSlide(index) {
   slide=Math.max(0,Math.min(index,d.images.length-1));
   if(lightbox.open) return renderLightbox();
   overview=false; $('#stage-container').innerHTML=stage(d);
+  if(Scoring.mode(review(d.id))==='page'){$('#panel-container').innerHTML=scorePanel(d);if(window.Cloud)decorateCloud();}
   $$('.segmented button').forEach(b=>b.classList.toggle('selected',b.dataset.overview==='false'));
   $('.thumbnail.current')?.scrollIntoView({block:'nearest',inline:'nearest'});
 }
 function updateScore(dim,value) {
-  const r=mutableReview(activeId);
+  const r=currentEntry(true);
   if(value===null) delete r.scores[dim]; else r.scores[dim]=value;
-  r.updatedAt=new Date().toISOString(); queueSave();
+  mutableReview(activeId).updatedAt=new Date().toISOString(); queueSave();
   $('#panel-container').innerHTML=scorePanel(activeDeck());
+  if(Scoring.mode(review(activeId))==='page')$$('.thumbnail').forEach((el,i)=>el.classList.toggle('page-rated',state.dimensions.every(d=>hasScore(Scoring.page(review(activeId),activeDeck().images[i]).scores[d.id]))));
   const sidebarEl=$('.sidebar');sidebarEl.outerHTML=sidebar();
   if(window.Cloud)decorateCloud();
 }
@@ -166,7 +183,8 @@ function modalHeader(title,subtitle='') {
 }
 function showModal(html,cls='') { modal.className=cls;modal.innerHTML=html;if(!modal.open)modal.showModal(); }
 function showSettings() {
-  showModal(modalHeader('评分设置','按你的评审习惯，建立一套自己的标准。')+'<form id="settings-form"><div class="settings-scale"><div><label for="max-score">评分满分</label><p>适用于所有评分项，可输入 1–100。</p></div><div class="max-score-input"><input id="max-score" type="number" min="1" max="100" step="0.1" required value="'+state.maxScore+'"><span>分</span></div></div><div class="scale-notice">'+icon('info')+'调整满分时，已有分数会按比例换算。</div><div class="settings-section-title"><h3>评分项</h3><span>至少 1 项，最多 12 项</span></div><div id="settings-dimensions">'+state.dimensions.map(settingsRow).join('')+'</div><button type="button" class="add-dimension" data-action="add-dimension">'+icon('plus')+'添加评分项</button><p class="settings-note">移除评分项后，已有分数会保留在记录中，但不再参与均分。</p><div class="form-error" id="settings-error" role="alert"></div><div class="modal-footer"><button type="button" class="button" data-action="close-modal">取消</button><button class="button primary" type="submit">保存设置</button></div></form>','settings-modal');
+  const subtitle=window.Cloud?'团队成员均可修改，保存后对所有人生效。':'按你的评审习惯，建立一套自己的标准。';
+  showModal(modalHeader('评分设置',subtitle)+'<form id="settings-form"><div class="settings-scale"><div><label for="max-score">评分满分</label><p>适用于所有评分项，可输入 1–100。</p></div><div class="max-score-input"><input id="max-score" type="number" min="1" max="100" step="0.1" required value="'+state.maxScore+'"><span>分</span></div></div><div class="scale-notice">'+icon('info')+(window.Cloud?'调整满分时，全团队已有分数会按比例换算。':'调整满分时，已有分数会按比例换算。')+'</div><div class="settings-section-title"><h3>评分项</h3><span>至少 1 项，最多 12 项</span></div><div id="settings-dimensions">'+state.dimensions.map(settingsRow).join('')+'</div><button type="button" class="add-dimension" data-action="add-dimension">'+icon('plus')+'添加评分项</button><p class="settings-note">移除评分项后，已有分数会保留在记录中，但不再参与均分。</p><div class="form-error" id="settings-error" role="alert"></div><div class="modal-footer"><button type="button" class="button" data-action="close-modal">取消</button><button class="button primary" type="submit">保存设置</button></div></form>','settings-modal');
 }
 function settingsRow(d) {
   return '<div class="settings-row" data-dim-id="'+esc(d.id)+'"><div class="settings-row-fields"><input class="dimension-name" aria-label="评分项名称" maxlength="30" required placeholder="评分项名称" value="'+esc(d.name)+'"><input class="dimension-desc" aria-label="评分项说明" maxlength="200" placeholder="评分时关注哪些细节？（可选）" value="'+esc(d.description||'')+'"></div><button type="button" class="icon-button remove-dim" aria-label="移除此评分项">'+icon('trash')+'</button></div>';
@@ -179,7 +197,7 @@ async function applySettings(e) {
   if(dimensions.some(d=>!d.name)){err.textContent='请填写每个评分项的名称。';return;}
   if(new Set(dimensions.map(d=>d.name)).size!==dimensions.length){err.textContent='评分项名称不能重复。';return;}
   if(!Number.isFinite(maximum)||maximum<1||maximum>100){err.textContent='满分应在 1 至 100 之间。';return;}
-  if(maximum!==state.maxScore) Object.values(state.reviews).forEach(r=>Object.keys(r.scores).forEach(id=>{ if(hasScore(r.scores[id]))r.scores[id]=Math.round(r.scores[id]/state.maxScore*maximum*100)/100; }));
+  if(maximum!==state.maxScore) Object.values(state.reviews).forEach(r=>Scoring.rescale(r,state.maxScore,maximum));
   state.maxScore=maximum;state.dimensions=dimensions;queueSave();modal.close();render();
   if(await flushSave())toast('评分标准已更新');
 }
@@ -272,12 +290,19 @@ function exportBackup() {
 }
 function exportCsv() {
   const safe=v=>{let s=String(v??'');if(/^[=+\-@\t\r]/.test(s))s="'"+s;return '"'+s.replace(/"/g,'""')+'"';};
-  const rows=[['作品名称','风格','图片数量','评分状态',...state.dimensions.map(d=>d.name),'综合均分','满分','收藏','评审笔记','更新时间'],...decks.map(d=>{const r=review(d.id);return [d.title,d.style,d.images.length,statusText(d.id),...state.dimensions.map(dim=>r.scores[dim.id]??''),average(d.id)==null?'':fmt(average(d.id)),state.maxScore,r.favorite?'是':'否',r.note||'',r.updatedAt||''];})];
+  const rows=[['作品名称','风格','图片数量','评分模式','页码','评分状态',...state.dimensions.map(d=>d.name),'综合均分','满分','收藏','评审笔记','更新时间']];
+  for(const d of decks){
+    const r=review(d.id),stats=reviewStats(d.id),perPage=Scoring.mode(r)==='page';
+    rows.push([d.title,d.style,d.images.length,perPage?'逐页评分':'整套评分','汇总',statusText(d.id),...state.dimensions.map(dim=>stats.scores[dim.id]),stats.mean==null?'':fmt(stats.mean),state.maxScore,r.favorite?'是':'否',perPage?'':r.note||'',r.updatedAt||'']);
+    if(perPage)d.images.forEach((im,i)=>{const entry=Scoring.page(r,im),values=state.dimensions.map(dim=>entry.scores[dim.id]),complete=values.every(hasScore),filled=values.filter(hasScore);
+      rows.push([d.title,d.style,d.images.length,'逐页评分',i+1,complete?'已评分':filled.length?'评分中':'待评分',...values,filled.length?fmt(filled.reduce((a,b)=>a+b,0)/filled.length):'',state.maxScore,r.favorite?'是':'否',entry.note||'',r.updatedAt||'']);
+    });
+  }
   download('观页-评分表-'+dateStamp()+'.csv','\uFEFF'+rows.map(row=>row.map(safe).join(',')).join('\r\n'),'text/csv;charset=utf-8');toast('评分表已导出，可用 Excel 打开');
 }
 function showExport() {
   restoreFile=null;
-  showModal(modalHeader('导出与备份','把你的判断留存下来，随时查看或继续评审。')+'<div class="export-options"><button class="export-option" data-action="export-csv"><span class="export-icon">'+icon('list')+'</span><div><h3>导出评分表</h3><p>CSV 格式，包含所有评分项、均分和笔记，可用 Excel 打开。</p></div>'+icon('arrow')+'</button><button class="export-option" data-action="export-json"><span class="export-icon">'+icon('download')+'</span><div><h3>备份评分记录</h3><p>JSON 格式，保存评分设置、笔记与收藏，不包含原始图片。</p></div>'+icon('arrow')+'</button></div><div class="restore-section"><h3>恢复评分备份</h3><p>恢复会替换当前评分设置与记录。恢复前会自动下载一份当前备份。</p><button class="button" data-action="choose-backup">'+icon('upload')+'选择备份文件</button><input type="file" id="backup-file" accept=".json,application/json" hidden><div id="restore-preview"></div><div class="form-error" id="restore-error" role="alert"></div></div><div class="modal-footer"><button class="button" data-action="close-modal">完成</button></div>','export-modal');
+  showModal(modalHeader('导出与备份','把你的判断留存下来，随时查看或继续评审。')+'<div class="export-options"><button class="export-option" data-action="export-csv"><span class="export-icon">'+icon('list')+'</span><div><h3>导出评分表</h3><p>CSV 格式，包含所有评分项、均分和笔记，可用 Excel 打开。</p></div>'+icon('arrow')+'</button><button class="export-option" data-action="export-json"><span class="export-icon">'+icon('download')+'</span><div><h3>备份评分记录</h3><p>JSON 格式，保存评分设置、笔记与收藏，不包含原始图片。</p></div>'+icon('arrow')+'</button></div><div class="restore-section"><h3>恢复评分备份</h3><p>'+(window.Cloud?'恢复会替换你的个人评分记录，并将备份中的评分标准应用到全团队。恢复前会自动下载当前备份。':'恢复会替换当前评分设置与记录。恢复前会自动下载一份当前备份。')+'</p><button class="button" data-action="choose-backup">'+icon('upload')+'选择备份文件</button><input type="file" id="backup-file" accept=".json,application/json" hidden><div id="restore-preview"></div><div class="form-error" id="restore-error" role="alert"></div></div><div class="modal-footer"><button class="button" data-action="close-modal">完成</button></div>','export-modal');
 }
 async function prepareRestore(file) {
   try {
@@ -293,7 +318,7 @@ async function restoreBackup() {
   if(!restoreFile)return;
   if(pending||saving) {await flushSave();if(saving||saveError){toast('请等待当前记录保存完成后重试',true);return;}}
   const restored=structuredClone(restoreFile.state);restored.revision=state.revision;
-  if(window.Cloud){restored.configRevision=state.configRevision;if(Cloud.member.role!=='admin'){restored.dimensions=structuredClone(state.dimensions);if(restored.maxScore!==state.maxScore){for(const r of Object.values(restored.reviews))for(const key of Object.keys(r.scores))if(hasScore(r.scores[key]))r.scores[key]=Math.round(r.scores[key]/restored.maxScore*state.maxScore*100)/100;}restored.maxScore=state.maxScore;}}
+  if(window.Cloud)restored.configRevision=state.configRevision;
   try {
     exportBackup();const result=await api('/api/state',{method:'PUT',body:JSON.stringify(restored)});
     restored.revision=result.revision;if(result.configRevision!==undefined)restored.configRevision=result.configRevision;state=restored;modal.close();render();toast('评分记录已恢复');
@@ -325,13 +350,13 @@ document.addEventListener('click', e => {
     if(activeId)renderDetail();else updateGrid();$('.sidebar').outerHTML=sidebar();if(window.Cloud)decorateCloud();return;
   }
   if(button.dataset.layout){layout=button.dataset.layout;updateGrid();$$('[data-layout]').forEach(b=>b.classList.toggle('selected',b.dataset.layout===layout));return;}
+  if(button.dataset.scoringMode){setScoringMode(button.dataset.scoringMode);return;}
   if(button.dataset.slideIndex!==undefined){changeSlide(Number(button.dataset.slideIndex));return;}
   if(button.dataset.previewSlide!==undefined){changeSlide(Number(button.dataset.previewSlide));return;}
   if(button.dataset.overview!==undefined){overview=button.dataset.overview==='true';renderDetail();return;}
   if(button.dataset.scoreDim){updateScore(button.dataset.scoreDim,Number(button.dataset.scoreValue));return;}
   if(button.classList.contains('remove-dim')){if($$('.settings-row').length<=1){toast('请至少保留一个评分项',true);return;}button.closest('.settings-row').remove();return;}
   const action=button.dataset.action;
-  if(window.Cloud&&['settings','import','append'].includes(action)&&Cloud.member?.role!=='admin'){toast('此操作需要管理员权限',true);return;}
   switch(action){
     case 'home':e.preventDefault();activeId=null;view='all';history.pushState(null,'',location.pathname);render();window.scrollTo(0,0);break;
     case 'back':backToLibrary();break;
@@ -342,6 +367,7 @@ document.addEventListener('click', e => {
     case 'close-modal':if(!importBusy)modal.close();break;
     case 'rescan':rescan();break;
     case 'retry-save':flushSave().then(ok=>{if(ok)toast('评分已保存到本地');});break;
+    case 'next-page':{if(!state.dimensions.every(dim=>hasScore(currentEntry().scores[dim.id]))){toast('请先完成本页所有评分项',true);break;}if(slide<activeDeck().images.length-1)changeSlide(slide+1);else nextPending();break;}
     case 'prev-slide':changeSlide(slide-1);break;
     case 'next-slide':changeSlide(slide+1);break;
     case 'lightbox':openLightbox();break;
@@ -361,14 +387,14 @@ document.addEventListener('click', e => {
 });
 document.addEventListener('input', e => {
   if(e.target.id==='search'){query=e.target.value;updateGrid();}
-  if(e.target.id==='review-note'){const r=mutableReview(activeId);r.note=e.target.value;r.updatedAt=new Date().toISOString();queueSave();}
+  if(e.target.id==='review-note'){const r=currentEntry(true);r.note=e.target.value;mutableReview(activeId).updatedAt=new Date().toISOString();queueSave();}
 });
 document.addEventListener('change', e => {
   if(e.target.id==='sort'){sort=e.target.value;updateGrid();}
   if(e.target.id==='style-filter'){styleFilter=e.target.value;updateGrid();}
   if(e.target.dataset.scoreInput){
     const value=e.target.value===''?null:Number(e.target.value);
-    if(value!==null&&(!Number.isFinite(value)||value<0||value>state.maxScore)){toast('请输入 0 至 '+state.maxScore+' 之间的分数',true);e.target.value=review(activeId).scores[e.target.dataset.scoreInput]??'';return;}
+    if(value!==null&&(!Number.isFinite(value)||value<0||value>state.maxScore)){toast('请输入 0 至 '+state.maxScore+' 之间的分数',true);e.target.value=currentEntry().scores[e.target.dataset.scoreInput]??'';return;}
     updateScore(e.target.dataset.scoreInput,value);
   }
   if(e.target.id==='image-files'||e.target.id==='folder-files'||e.target.id==='document-files')chooseFiles(e.target.files);

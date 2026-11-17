@@ -69,7 +69,6 @@ window.Cloud = (() => {
     throw new Error('云端暂不支持此操作');
   }
   async function importDocuments(value){
-    if(member.role!=='admin')throw new Error('只有管理员可以导入作品');
     if(value.files.some(f=>!f.name.toLowerCase().endsWith('.pdf')))throw new Error('在线版请将 PPT 另存为 PDF 后导入；本机版支持直接导入 PPT / PPTX。');
     const pdfjs=await import('./vendor/pdf.mjs');
     pdfjs.GlobalWorkerOptions.workerSrc=new URL('./vendor/pdf.worker.mjs',location.href).href;
@@ -93,7 +92,6 @@ window.Cloud = (() => {
     return importImages({target:value.target,images});
   }
   async function importImages(value){
-    if(member.role!=='admin')throw new Error('只有管理员可以导入作品');
     const groups=new Map();
     for(const image of value.images){const group=value.target||image.group||value.name||'新作品';if(!groups.has(group))groups.set(group,[]);groups.get(group).push(image);}
     const created=[];let added=0;

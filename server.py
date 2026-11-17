@@ -143,9 +143,19 @@ def validate_state(value):
             raise ValueError('备注最多 10000 字')
         if not isinstance(review.get('favorite', False), bool):
             raise ValueError('收藏记录格式无效')
-        for key, score in review.get('scores', {}).items():
-            if score is not None and (isinstance(score, bool) or not isinstance(score, (int, float)) or not 0 <= score <= maximum):
-                raise ValueError('评分必须在 0 与满分之间')
+        if review.get('mode', 'deck') not in ('deck', 'page'):
+            raise ValueError('评分模式无效')
+        pages = review.get('pages', {})
+        if not isinstance(pages, dict) or len(pages) > 600:
+            raise ValueError('逐页评分记录无效')
+        for entry in [review, *pages.values()]:
+            if not isinstance(entry, dict) or not isinstance(entry.get('scores'), dict):
+                raise ValueError('评分记录格式无效')
+            if not isinstance(entry.get('note', ''), str) or len(entry.get('note', '')) > 10000:
+                raise ValueError('备注最多 10000 字')
+            for score in entry['scores'].values():
+                if score is not None and (isinstance(score, bool) or not isinstance(score, (int, float)) or not 0 <= score <= maximum):
+                    raise ValueError('评分必须在 0 与满分之间')
 
 
 class Handler(SimpleHTTPRequestHandler):

@@ -9,7 +9,6 @@ function decorateCloud(){
   if(!$('.topbar-actions [data-cloud-action]'))$('.topbar-actions').insertAdjacentHTML('afterbegin','<button class="button small" data-cloud-action="team">团队汇总</button>');
   if(avatar){avatar.tabIndex=0;avatar.setAttribute('role','button');avatar.setAttribute('aria-label','账号设置');avatar.dataset.cloudAction='account';}
   $$('.save-status').forEach(el=>{el.innerHTML=el.innerHTML.replace('已保存到本地','已保存到云端');});
-  if(Cloud.member.role!=='admin')$$('[data-action="settings"],[data-action="import"],[data-action="append"]').forEach(el=>el.hidden=true);
 }
 async function showTeam(){
   if(!await flushSave())return;
@@ -18,16 +17,27 @@ async function showTeam(){
 }
 function teamRows(){
   const data=Cloud.team;
-  return decks.map(d=>{const records=data.reviews.filter(r=>r.deck_id===d.id&&state.dimensions.every(dim=>hasScore(r.data.scores[dim.id])));return {d,records,mean:records.length?records.reduce((sum,r)=>sum+state.dimensions.reduce((s,dim)=>s+r.data.scores[dim.id],0)/state.dimensions.length,0)/records.length:null};}).sort((a,b)=>(b.mean??-1)-(a.mean??-1));
+  return decks.map(d=>{const records=data.reviews.filter(r=>r.deck_id===d.id&&Scoring.stats(r.data,d,state.dimensions).complete);return {d,records,mean:records.length?records.reduce((sum,r)=>sum+Scoring.stats(r.data,d,state.dimensions).mean,0)/records.length:null};}).sort((a,b)=>(b.mean??-1)-(a.mean??-1));
+}
+function teamCell(d,member){
+  const record=Cloud.team.reviews.find(r=>r.deck_id===d.id&&r.user_id===member.user_id);
+  if(!record)return '<td>—</td>';
+  const r=record.data,stats=Scoring.stats(r,d,state.dimensions),perPage=Scoring.mode(r)==='page';
+  const details=perPage?'<details><summary>查看逐页评分</summary>'+d.images.map((im,i)=>{const page=Scoring.page(r,im);return '<small>第 '+(i+1)+' 页 · '+state.dimensions.map(dim=>esc(dim.name)+' '+fmt(page.scores[dim.id])).join(' · ')+(page.note?' · '+esc(page.note):'')+'</small>';}).join('')+'</details>':'';
+  return '<td><b>'+(stats.complete?fmt(stats.mean):'评分中')+'</b><small>'+(perPage?'逐页评分 · '+stats.pagesDone+'/'+d.images.length+' 页':'整套评分')+'</small><small>'+state.dimensions.map(dim=>esc(dim.name)+' '+fmt(stats.scores[dim.id])).join(' · ')+'</small>'+(!perPage&&r.note?'<small class="team-note">'+esc(r.note)+'</small>':'')+details+'</td>';
 }
 function renderTeam(){
   const {members}=Cloud.team;
-  $('#team-content').innerHTML='<p class="team-description">'+members.length+' 位评审 · '+decks.length+' 套作品 · '+state.maxScore+' 分制</p><div class="team-table-scroll"><table class="team-table"><thead><tr><th>作品</th><th>团队均分</th><th>已评人数</th>'+members.map(m=>'<th>'+esc(m.name)+'</th>').join('')+'</tr></thead><tbody>'+teamRows().map(({d,records,mean})=>'<tr><th>'+esc(d.title)+'</th><td class="team-mean">'+fmt(mean)+'</td><td>'+records.length+' / '+members.length+'</td>'+members.map(m=>{const record=Cloud.team.reviews.find(r=>r.deck_id===d.id&&r.user_id===m.user_id);const values=state.dimensions.map(dim=>record?.data.scores[dim.id]);const complete=values.every(hasScore);return '<td><b>'+ (complete?fmt(values.reduce((s,n)=>s+n,0)/values.length):record?'评分中':'—')+'</b>'+(record?'<small>'+state.dimensions.map(dim=>esc(dim.name)+' '+fmt(record.data.scores[dim.id])).join(' · ')+'</small>'+(record.data.note?'<small class="team-note">'+esc(record.data.note)+'</small>':''):'')+'</td>';}).join('')+'</tr>').join('')+'</tbody></table></div>';
+  $('#team-content').innerHTML='<p class="team-description">'+members.length+' 位评审 · '+decks.length+' 套作品 · '+state.maxScore+' 分制</p><div class="team-table-scroll"><table class="team-table"><thead><tr><th>作品</th><th>团队均分</th><th>已评人数</th>'+members.map(m=>'<th>'+esc(m.name)+'</th>').join('')+'</tr></thead><tbody>'+teamRows().map(({d,records,mean})=>'<tr><th>'+esc(d.title)+'</th><td class="team-mean">'+fmt(mean)+'</td><td>'+records.length+' / '+members.length+'</td>'+members.map(m=>teamCell(d,m)).join('')+'</tr>').join('')+'</tbody></table></div>';
 }
 function exportTeam(){
  const cell=x=>'"'+String(x??'').replace(/^[=+\-@\t\r]/,"'$&").replace(/"/g,'""')+'"';
- const rows=[['作品','评审',...state.dimensions.map(d=>d.name),'个人均分','状态','笔记']];
- for(const d of decks)for(const m of Cloud.team.members){const record=Cloud.team.reviews.find(r=>r.deck_id===d.id&&r.user_id===m.user_id);const values=state.dimensions.map(dim=>record?.data.scores[dim.id]);const complete=values.every(hasScore);rows.push([d.title,m.name,...values,complete?fmt(values.reduce((s,n)=>s+n,0)/values.length):'',complete?'已评分':record?'评分中':'待评分',record?.data.note||'']);}
+ const rows=[['作品','评审','评分模式','页码',...state.dimensions.map(d=>d.name),'个人均分','状态','笔记']];
+ for(const d of decks)for(const m of Cloud.team.members){
+   const record=Cloud.team.reviews.find(r=>r.deck_id===d.id&&r.user_id===m.user_id),r=record?.data,stats=Scoring.stats(r,d,state.dimensions),perPage=Scoring.mode(r)==='page';
+   rows.push([d.title,m.name,perPage?'逐页评分':'整套评分','汇总',...state.dimensions.map(dim=>stats.scores[dim.id]),stats.complete?fmt(stats.mean):'',stats.complete?'已评分':stats.values.length?'评分中':'待评分',perPage?'':r?.note||'']);
+   if(perPage)d.images.forEach((im,i)=>{const page=Scoring.page(r,im),values=state.dimensions.map(dim=>page.scores[dim.id]),complete=values.every(hasScore);rows.push([d.title,m.name,'逐页评分',i+1,...values,complete?fmt(values.reduce((a,b)=>a+b,0)/values.length):'',complete?'已评分':values.some(hasScore)?'评分中':'待评分',page.note||'']);});
+ }
  download('观页-团队评分-'+dateStamp()+'.csv','\uFEFF'+rows.map(row=>row.map(cell).join(',')).join('\r\n'),'text/csv;charset=utf-8');
 }
 function showCloudPassword(){showModal(modalHeader('修改登录密码','设置至少 8 位的新密码。')+'<form id="cloud-password-form"><label class="field-label" for="new-cloud-password">新密码</label><input id="new-cloud-password" class="text-input" type="password" minlength="8" required autocomplete="new-password"><div id="password-error" class="form-error" role="alert"></div><div class="modal-footer"><button type="button" class="button" data-action="close-modal">取消</button><button class="button primary" type="submit">保存密码</button></div></form>');}

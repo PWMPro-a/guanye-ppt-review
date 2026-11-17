@@ -12,3 +12,7 @@ dialog{border:1px solid #e4eae0;background:#fff;color:var(--ink);border-radius:1
 @media(max-width:640px){.mobile-tools{display:flex;gap:2px}.mobile-tools .icon-button{width:24px;height:28px}.mobile-tools .icon{width:14px;height:14px}.topbar-actions{gap:9px}.topbar .avatar{display:none}.topbar .button.small{font-size:8px}.topbar .button.small .icon{width:12px;height:12px}.breadcrumb{gap:9px;font-size:8px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
 .avatar[data-cloud-action]{cursor:pointer}@media(max-width:640px){.topbar .avatar[data-cloud-action]{display:inline-flex;flex-shrink:0;width:24px;height:24px;font-size:9px}.cloud-login{padding:28px 24px}.team-content{padding:0 20px}}
+.scoring-mode {display:flex;width:100%;margin-top:22px}
+.scoring-mode button {flex:1;justify-content:center}
+.mode-description {color:var(--muted,#7b827e);font-size:12px;line-height:1.7;margin:10px 0 0}
+.thumbnail.page-rated:after {content:'✓';position:absolute;right:3px;top:3px;background:#23624c;color:white;border-radius:50%;width:16px;height:16px;font-size:10px;display:grid;place-items:center}
