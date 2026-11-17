@@ -118,4 +118,4 @@ revoke all on function public.join_workspace(uuid,text,text), public.get_review_
 grant execute on function public.join_workspace(uuid,text,text), public.get_review_state(uuid),public.save_review_state(uuid,jsonb),public.add_review_deck(uuid,jsonb),public.is_member(uuid) to authenticated;
 insert into storage.buckets(id,name,public,file_size_limit) values('ppt-library','ppt-library',false,104857600) on conflict(id) do nothing;
 create policy team_images_read on storage.objects for select to authenticated using(bucket_id='ppt-library' and public.is_member((storage.foldername(name))[1]::uuid));
-create policy admin_images_insert on storage.objects for insert to authenticated with check(bucket_id='ppt-library' and exists(select 1 from public.members where workspace_id=(storage.foldername(name))[1]::uuid and user_id=auth.uid() and role='admin'));
+create policy admin_images_insert on storage.objects for insert to authenticated with check(bucket_id='ppt-library' and exists(select 1 from public.members m where m.workspace_id=(storage.foldername(storage.objects.name))[1]::uuid and m.user_id=auth.uid() and m.role='admin'));
