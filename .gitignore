@@ -1,0 +1,8 @@
+data/
+__pycache__/
+.test-output/
+dist/
+.env*
+cloud/private*
+cloud/bootstrap.sql
+node_modules/

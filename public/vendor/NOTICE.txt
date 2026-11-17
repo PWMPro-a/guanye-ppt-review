@@ -1,0 +1,9 @@
+Bundled client dependencies:
+
+supabase-js 2.89.0, Supabase, MIT license.
+https://github.com/supabase/supabase-js/blob/v2.89.0/LICENSE
+
+PDF.js / pdfjs-dist 4.10.38, Mozilla Foundation, Apache License 2.0.
+https://github.com/mozilla/pdf.js/blob/v4.10.38/LICENSE
+
+PDF.js source license notices are retained in the bundled modules.

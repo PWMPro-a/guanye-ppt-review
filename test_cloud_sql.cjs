@@ -1,0 +1,41 @@
+// npm install --prefix .test-output/sql @electric-sql/pglite
+const {PGlite}=require('./.test-output/sql/node_modules/@electric-sql/pglite');
+const {pgcrypto}=require('./.test-output/sql/node_modules/@electric-sql/pglite/dist/contrib/pgcrypto.cjs');
+const fs=require('node:fs'),assert=require('node:assert/strict');
+(async()=>{
+ const db=new PGlite({extensions:{pgcrypto}});
+ await db.exec("create schema auth; create schema storage; create schema extensions; create role anon; create role authenticated; create table auth.users(id uuid primary key); create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$; create function auth.jwt() returns jsonb language sql stable as $$select jsonb_build_object('email',current_setting('request.jwt.claim.email',true))$$; create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint); create table storage.objects(id uuid,name text,bucket_id text); alter table storage.objects enable row level security; create function storage.foldername(text) returns text[] language sql as $$select string_to_array($1,'/')$$;");
+ await db.exec('create role service_role bypassrls');
+ await db.exec(fs.readFileSync('cloud/schema.sql','utf8'));
+ await db.exec('grant usage on schema public,auth,storage to authenticated,anon; grant select,insert,update,delete on all tables in schema public,storage to authenticated,anon;');
+ const w='11111111-1111-4111-8111-111111111111', a='22222222-2222-4222-8222-222222222222',b='33333333-3333-4333-8333-333333333333',c='44444444-4444-4444-8444-444444444444';
+ await db.query("insert into workspaces(id,name,owner_email,invite_hash) values($1,'test','owner@example.test',encode(extensions.digest('invite','sha256'),'hex'))",[w]);
+ for(const id of [a,b,c])await db.query('insert into auth.users values($1)',[id]);
+ async function login(id,email){await db.exec('reset role');await db.query("select set_config('request.jwt.claim.sub',$1,false),set_config('request.jwt.claim.email',$2,false)",[id,email]);await db.exec('set role authenticated');}
+ const state=async()=> (await db.query('select get_review_state($1) as s',[w])).rows[0].s;
+ const save=async s=>(await db.query('select save_review_state($1,$2) as s',[w,s])).rows[0].s;
+ await login(a,'owner@example.test');
+ await assert.rejects(db.query('select join_workspace($1,$2,$3)',[w,'owner',null]),/邀请码/);
+ await db.query('select join_workspace($1,$2,$3)',[w,'owner','invite']);
+ assert.equal((await db.query('select role from members where user_id=$1',[a])).rows[0].role,'admin');
+ const deck={id:'deck',title:'test',name:'test',images:[{id:'img',path:w+'/deck/a.jpg'}]};
+ await db.query('select add_review_deck($1,$2)',[w,deck]);
+ let s=await state();s.reviews.deck={scores:{visual:4,layout:5},note:'a'};await save(s);
+ await assert.rejects(save(s),/另一窗口/);
+ await login(b,'reviewer@example.test');await db.query('select join_workspace($1,$2,$3)',[w,'reviewer','invite']);
+ s=await state();assert.deepEqual(s.reviews,{});s.reviews.deck={scores:{visual:2,layout:3},note:'b'};await save(s);
+ assert.equal((await db.query('select count(*)::int as n from reviews')).rows[0].n,2);
+ s=await state();s.maxScore=10;await assert.rejects(save(s),/只有管理员/);
+ assert.equal((await db.query('update members set role=$1 where user_id=$2 returning user_id',['admin',b])).rows.length,0);
+ assert.equal((await db.query('select role from members where user_id=$1',[b])).rows[0].role,'reviewer');
+ await assert.rejects(db.query('select add_review_deck($1,$2)',[w,deck]),/只有管理员/);
+ s=await state();delete s.configRevision;await assert.rejects(save(s),/评分标准已更新/);
+ s=await state();s.reviews.deck.scores.visual=8;await assert.rejects(save(s),/分数超出范围/);
+ const old=await state();
+ await login(a,'owner@example.test');s=await state();s.maxScore=10;s.reviews.deck.scores={visual:8,layout:10};await save(s);
+ await login(b,'reviewer@example.test');s=await state();assert.deepEqual(s.reviews.deck.scores,{visual:4,layout:6});assert.equal(s.configRevision,1);
+ await assert.rejects(save(old),/评分标准已更新/);
+ await login(c,'outsider@example.test');assert.equal((await db.query('select count(*)::int as n from reviews')).rows[0].n,0);assert.equal((await db.query('select count(*)::int as n from decks')).rows[0].n,0);await assert.rejects(state(),/邀请码/);
+ await db.exec('reset role;set role anon');await assert.rejects(db.query('select get_review_state($1)',[w]),/permission/);
+ await db.close();console.log('PASS: schema, independent reviewers, RLS isolation, admin permissions, revisions, score rescaling, invitation and anonymous access');
+})().catch(e=>{console.error(e.message,e.where||'');process.exit(1);});

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#f8f9f8">
+  <title>观页 · PPT 评分工作台</title>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./cloud-config.js" defer></script>
+  <script src="./vendor/supabase.js" defer></script>
+  <script src="./cloud.js" defer></script>
+  <script src="./app.js" defer></script>
+  <script src="./team.js" defer></script>
+</head>
+<body>
+  <div id="app"><div class="boot"><span class="brand-mark">▥</span><p>正在打开作品库…</p></div></div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <dialog id="modal" aria-labelledby="modal-title"></dialog>
+  <dialog id="lightbox" aria-label="图片大图预览"></dialog>
+</body>
+</html>
