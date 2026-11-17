@@ -7,6 +7,7 @@ function decorateCloud(){
   if(!$('.sidebar [data-cloud-action]'))$('.sidebar-divider').insertAdjacentHTML('afterend','<button class="nav-item" data-cloud-action="team">'+icon('list')+'<span>团队评分汇总</span></button><button class="nav-item" data-cloud-action="logout">'+icon('arrow')+'<span>退出登录</span></button>');
   if(!$('.sidebar [data-cloud-action="password"]'))$('.sidebar-divider').insertAdjacentHTML('afterend','<button class="nav-item" data-cloud-action="password">'+icon('settings')+'<span>修改登录密码</span></button>');
   if(!$('.topbar-actions [data-cloud-action]'))$('.topbar-actions').insertAdjacentHTML('afterbegin','<button class="button small" data-cloud-action="team">团队汇总</button>');
+  if(avatar){avatar.tabIndex=0;avatar.setAttribute('role','button');avatar.setAttribute('aria-label','账号设置');avatar.dataset.cloudAction='account';}
   $$('.save-status').forEach(el=>{el.innerHTML=el.innerHTML.replace('已保存到本地','已保存到云端');});
   if(Cloud.member.role!=='admin')$$('[data-action="settings"],[data-action="import"],[data-action="append"]').forEach(el=>el.hidden=true);
 }
@@ -30,5 +31,8 @@ function exportTeam(){
  download('观页-团队评分-'+dateStamp()+'.csv','\uFEFF'+rows.map(row=>row.map(cell).join(',')).join('\r\n'),'text/csv;charset=utf-8');
 }
 function showCloudPassword(){showModal(modalHeader('修改登录密码','设置至少 8 位的新密码。')+'<form id="cloud-password-form"><label class="field-label" for="new-cloud-password">新密码</label><input id="new-cloud-password" class="text-input" type="password" minlength="8" required autocomplete="new-password"><div id="password-error" class="form-error" role="alert"></div><div class="modal-footer"><button type="button" class="button" data-action="close-modal">取消</button><button class="button primary" type="submit">保存密码</button></div></form>');}
+function showCloudAccount(){showModal(modalHeader('账号设置',Cloud.member.name)+'<div class="export-options"><button class="export-option" data-cloud-action="password">修改登录密码</button><button class="export-option" data-cloud-action="logout">退出登录</button></div><div class="modal-footer"><button class="button" data-action="close-modal">完成</button></div>');}
+document.addEventListener('click',e=>{if(e.target.closest('[data-cloud-action="account"]'))showCloudAccount();});
+document.addEventListener('keydown',e=>{if(e.target.matches('[data-cloud-action="account"]')&&['Enter',' '].includes(e.key)){e.preventDefault();showCloudAccount();}});
 document.addEventListener('submit',async e=>{if(e.target.id!=='cloud-password-form')return;e.preventDefault();const button=e.target.querySelector('[type="submit"]');button.disabled=true;try{await Cloud.changePassword($('#new-cloud-password').value);modal.close();toast('登录密码已更新');}catch(err){$('#password-error').textContent=err.message;}finally{button.disabled=false;}});
 document.addEventListener('click',e=>{const button=e.target.closest('[data-cloud-action]');if(!button)return;if(button.dataset.cloudAction==='team')showTeam();if(button.dataset.cloudAction==='password')showCloudPassword();if(button.dataset.cloudAction==='logout'){if(pending||saving){toast('请等待评分保存后退出',true);return;}Cloud.logout();}if(button.dataset.cloudAction==='team-csv')exportTeam();});
