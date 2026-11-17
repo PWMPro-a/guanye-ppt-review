@@ -14,6 +14,8 @@
 6. Pages 选择 GitHub Actions，运行 Deploy review website。Supabase Auth 的 Site URL 和 Redirect URLs 使用网站完整网址。
 
 也可使用临时 Supabase Management API 令牌进行命令行部署；保存到被 Git 忽略的 cloud/private-token.txt，禁止提交。
+当前已部署的网站为 https://pwmpro-a.github.io/guanye-ppt-review/ 。本机 cloud/private-login-info.txt 保存初始管理员、独立评审账号和团队邀请码；勿提交或整体群发。
+cloud/manage.py 支持 inventory、create、status、configure、upload、pages 六个步骤；create_accounts.py 提供初始账号，verify_live.py 验证线上权限并清理测试记录。
 管理令牌和 service-role 密钥只在本机部署时使用，不应进入网页、GitHub 变量或构建产物。
 
 ## 使用与限制

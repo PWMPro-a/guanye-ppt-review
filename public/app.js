@@ -331,7 +331,7 @@ document.addEventListener('click', e => {
   if(button.dataset.scoreDim){updateScore(button.dataset.scoreDim,Number(button.dataset.scoreValue));return;}
   if(button.classList.contains('remove-dim')){if($$('.settings-row').length<=1){toast('请至少保留一个评分项',true);return;}button.closest('.settings-row').remove();return;}
   const action=button.dataset.action;
-  if(window.Cloud&&Cloud.member.role!=='admin'&&['settings','import','append'].includes(action)){toast('此操作需要管理员权限',true);return;}
+  if(window.Cloud&&['settings','import','append'].includes(action)&&Cloud.member?.role!=='admin'){toast('此操作需要管理员权限',true);return;}
   switch(action){
     case 'home':e.preventDefault();activeId=null;view='all';history.pushState(null,'',location.pathname);render();window.scrollTo(0,0);break;
     case 'back':backToLibrary();break;
