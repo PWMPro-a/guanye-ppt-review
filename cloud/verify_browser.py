@@ -19,6 +19,7 @@ def main():
         page.locator('#cloud-password').fill(account['password'])
         page.locator('#cloud-auth button[type="submit"]').click()
         expect(page.locator('.deck-card').first).to_be_visible(timeout=60000)
+        page.wait_for_function('document.querySelector(".deck-card img")?.naturalWidth>0',timeout=30000)
         expect(page.locator('[data-action="import"]')).to_be_hidden()
         expect(page.locator('.topbar [data-cloud-action="team"]')).to_be_visible()
         page.locator('.deck-card').first.click()
@@ -32,6 +33,9 @@ def main():
         page.screenshot(path=str(ROOT/'.test-output/cloud-library-live.png'),full_page=True)
         page.set_viewport_size({'width':390,'height':844})
         expect(page.locator('.deck-card').first).to_be_visible()
+        page.locator('.avatar[data-cloud-action="account"]').click()
+        expect(page.locator('[data-cloud-action="password"]').last).to_be_visible()
+        page.locator('[data-action="close-modal"]').last.click()
         page.screenshot(path=str(ROOT/'.test-output/cloud-mobile-live.png'),full_page=True)
         assert page.evaluate('document.documentElement.scrollWidth<=window.innerWidth'), 'Mobile horizontal overflow'
         assert not errors,errors
