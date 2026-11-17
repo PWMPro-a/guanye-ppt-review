@@ -115,5 +115,6 @@ window.Cloud = (() => {
     }
     return {decks:(await library()).decks,created,added,skipped:0};
   }
-  return {ready,request,refreshTeam,get member(){return member;},get team(){return {members,reviews:teamReviews};},async logout(){await client.auth.signOut();location.reload();}};
+  async function changePassword(password){if(password.length<8)throw new Error('密码至少需要 8 个字符');await checked(client.auth.updateUser({password}));}
+  return {ready,request,refreshTeam,changePassword,get member(){return member;},get team(){return {members,reviews:teamReviews};},async logout(){await client.auth.signOut();location.reload();}};
 })();
