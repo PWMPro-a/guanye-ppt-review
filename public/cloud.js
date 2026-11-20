@@ -40,29 +40,38 @@ window.Cloud = (() => {
     if(!member){gate('已登录，请填写姓名和团队邀请码后再次点击“登录并进入”。');return false;}
     return true;
   }
-  async function signedDecks(rows){
-    const list=rows.map(row=>structuredClone(row.data));
-    const paths=[...new Set(list.flatMap(d=>d.images.flatMap(i=>[i.path,i.thumbPath].filter(Boolean))))];
-    const mapping={};
-    for(let start=0;start<paths.length;start+=100){
-      const batch=await checked(client.storage.from('ppt-library').createSignedUrls(paths.slice(start,start+100),3600));
-      for(const item of batch){if(item.error)throw new Error('图片访问失败，请重新登录');mapping[item.path]=item.signedUrl;}
+  const urlCache=new Map(), waiting=new Map();
+  async function signWaiting(){
+    const entries=[...waiting];waiting.clear();
+    for(let i=0;i<entries.length;i+=100){
+      const group=entries.slice(i,i+100);
+      try{
+        const rows=await checked(client.storage.from('ppt-library').createSignedUrls(group.map(([path])=>path),3600));
+        const urls=new Map(rows.filter(r=>!r.error&&r.signedUrl).map(r=>[r.path,r.signedUrl]));
+        for(const [path,job] of group){if(urls.has(path))job.resolve(urls.get(path));else{urlCache.delete(path);job.reject(new Error('图片暂不可用'));}}
+      }catch(err){for(const [path,job] of group){urlCache.delete(path);job.reject(err);}}
     }
-    for(const d of list)for(const i of d.images){if(i.path)i.url=mapping[i.path];if(i.thumbPath||i.path)i.thumb=mapping[i.thumbPath||i.path];}
-    return list;
+  }
+  function imageUrl(path){
+    const cached=urlCache.get(path);if(cached&&cached.expires>Date.now())return cached.promise;
+    if(!waiting.size)Promise.resolve().then(signWaiting);
+    const promise=new Promise((resolve,reject)=>waiting.set(path,{resolve,reject}));
+    urlCache.set(path,{promise,expires:Date.now()+55*60*1000});return promise;
   }
   async function refreshTeam(){
     [members,teamReviews]=await Promise.all([allRows('members','user_id,name,role','user_id'),allRows('reviews','user_id,deck_id,data','deck_id,user_id')]);
     return {members, reviews:teamReviews};
   }
+  let summary={},summarySeq=0;
+  async function refreshSummary(){const seq=++summarySeq;const rows=await rpc('review_score_summary');if(seq===summarySeq)summary=rows;return summary;}
   async function library(){
-    const [rows,state]=await Promise.all([allRows('decks','data','id'),rpc('get_review_state')]);
-    await refreshTeam();
-    return {decks:await signedDecks(rows),state,source:'团队作品库',sourceAvailable:true};
+    const [rows,state]=await Promise.all([allRows('decks','data','id'),rpc('get_review_state'),refreshSummary()]);
+    return {decks:rows.map(row=>row.data),state,source:'团队作品库',sourceAvailable:true};
   }
   async function request(url,options={}){
     if(url==='/api/library')return library();
     if(url==='/api/state')return rpc('save_review_state',{incoming:JSON.parse(options.body)});
+    if(url==='/api/delete-deck')return rpc('delete_review_deck',JSON.parse(options.body));
     if(url==='/api/rescan')return {decks:(await library()).decks,sourceAvailable:true};
     if(url==='/api/import-documents')return importDocuments(JSON.parse(options.body));
     if(url==='/api/import')return importImages(JSON.parse(options.body));
@@ -114,5 +123,5 @@ window.Cloud = (() => {
     return {decks:(await library()).decks,created,added,skipped:0};
   }
   async function changePassword(password){if(password.length<8)throw new Error('密码至少需要 8 个字符');await checked(client.auth.updateUser({password}));}
-  return {ready,request,refreshTeam,changePassword,get member(){return member;},get team(){return {members,reviews:teamReviews};},async logout(){await client.auth.signOut();location.reload();}};
+  return {ready,request,imageUrl,refreshSummary,get summary(){return summary;},refreshTeam,changePassword,get member(){return member;},get team(){return {members,reviews:teamReviews};},async logout(){await client.auth.signOut();location.reload();}};
 })();

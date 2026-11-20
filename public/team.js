@@ -12,15 +12,22 @@ function decorateCloud(){
 }
 async function showTeam(){
   if(!await flushSave())return;
-  showModal(modalHeader('团队评分汇总','各人独立评分，汇总仅统计已完成全部评分项的记录。')+'<div id="team-content" class="team-content">正在读取团队评分…</div><div class="modal-footer"><button class="button" data-cloud-action="team-csv">导出团队明细</button><button class="button primary" data-action="close-modal">完成</button></div>','team-modal');
-  try{await Cloud.refreshTeam();renderTeam();}catch(err){$('#team-content').textContent=err.message;}
+  showModal(modalHeader('团队评分汇总','各人独立评分，汇总仅统计已完成全部评分项的记录。')+'<div id="team-content" class="team-content">正在读取团队评分…</div><div class="modal-footer"><button class="button" data-cloud-action="team-csv" disabled>导出团队明细</button><button class="button primary" data-action="close-modal">完成</button></div>','team-modal');
+  try{await Promise.all([Cloud.refreshTeam(),Cloud.refreshSummary()]);if(modal.open&&$('#team-content')){renderTeam();$('[data-cloud-action="team-csv"]').disabled=false;}if($('#deck-grid'))updateGrid();}catch(err){if($('#team-content'))$('#team-content').textContent=err.message;}
 }
-function teamRows(){
-  const data=Cloud.team;
-  return decks.map(d=>{const records=data.reviews.filter(r=>r.deck_id===d.id&&Scoring.stats(r.data,d,state.dimensions).complete);return {d,records,mean:records.length?records.reduce((sum,r)=>sum+Scoring.stats(r.data,d,state.dimensions).mean,0)/records.length:null};}).sort((a,b)=>(b.mean??-1)-(a.mean??-1));
+function teamIndex(){
+  const byDeck=new Map();
+  for(const row of Cloud.team.reviews){if(row.user_id===Cloud.member.user_id)continue;if(!byDeck.has(row.deck_id))byDeck.set(row.deck_id,new Map());byDeck.get(row.deck_id).set(row.user_id,row);}
+  return new Map(decks.map(d=>{
+    const people=byDeck.get(d.id)||new Map(),own=state.reviews[d.id];
+    if(own)people.set(Cloud.member.user_id,{deck_id:d.id,user_id:Cloud.member.user_id,data:own});
+    const records=[];let total=0;
+    for(const row of people.values()){const stats=Scoring.stats(row.data,d,state.dimensions);if(stats.complete){records.push(row);total+=stats.mean;}}
+    return [d.id,{d,people,records,mean:records.length?total/records.length:null}];
+  }));
 }
-function teamCell(d,member){
-  const record=Cloud.team.reviews.find(r=>r.deck_id===d.id&&r.user_id===member.user_id);
+function teamRows(){return [...teamIndex().values()].sort((a,b)=>(b.mean??-1)-(a.mean??-1));}
+function teamCell(d,record){
   if(!record)return '<td>—</td>';
   const r=record.data,stats=Scoring.stats(r,d,state.dimensions),perPage=Scoring.mode(r)==='page';
   const details=perPage?'<details><summary>查看逐页评分</summary>'+d.images.map((im,i)=>{const page=Scoring.page(r,im);return '<small>第 '+(i+1)+' 页 · '+state.dimensions.map(dim=>esc(dim.name)+' '+fmt(page.scores[dim.id])).join(' · ')+(page.note?' · '+esc(page.note):'')+'</small>';}).join('')+'</details>':'';
@@ -28,7 +35,8 @@ function teamCell(d,member){
 }
 function renderTeam(){
   const {members}=Cloud.team;
-  $('#team-content').innerHTML='<p class="team-description">'+members.length+' 位评审 · '+decks.length+' 套作品 · '+state.maxScore+' 分制</p><div class="team-table-scroll"><table class="team-table"><thead><tr><th>作品</th><th>团队均分</th><th>已评人数</th>'+members.map(m=>'<th>'+esc(m.name)+'</th>').join('')+'</tr></thead><tbody>'+teamRows().map(({d,records,mean})=>'<tr><th>'+esc(d.title)+'</th><td class="team-mean">'+fmt(mean)+'</td><td>'+records.length+' / '+members.length+'</td>'+members.map(m=>teamCell(d,m)).join('')+'</tr>').join('')+'</tbody></table></div>';
+  $('#team-content').innerHTML='<p class="team-description">'+members.length+' 位评审 · '+decks.length+' 套作品 · '+state.maxScore+' 分制</p><div class="team-table-scroll"><table class="team-table"><thead><tr><th>作品</th><th>团队均分</th><th>已评人数</th>'+members.map(m=>'<th>'+esc(m.name)+'</th>').join('')+'</tr></thead><tbody>'+teamRows().map(({d,people,records,mean})=>'<tr><th><button class="team-work" data-open="'+esc(d.id)+'"><img '+imageAttr(d.images[0],'thumb')+' alt="" loading="lazy"><span>'+esc(d.title)+'</span></button></th><td class="team-mean">'+fmt(mean)+'</td><td>'+records.length+' / '+members.length+'</td>'+members.map(m=>teamCell(d,people.get(m.user_id))).join('')+'</tr>').join('')+'</tbody></table></div>';
+  observeImages();
 }
 function exportTeam(){
  const cell=x=>'"'+String(x??'').replace(/^[=+\-@\t\r]/,"'$&").replace(/"/g,'""')+'"';
@@ -46,3 +54,13 @@ document.addEventListener('click',e=>{if(e.target.closest('[data-cloud-action="a
 document.addEventListener('keydown',e=>{if(e.target.matches('[data-cloud-action="account"]')&&['Enter',' '].includes(e.key)){e.preventDefault();showCloudAccount();}});
 document.addEventListener('submit',async e=>{if(e.target.id!=='cloud-password-form')return;e.preventDefault();const button=e.target.querySelector('[type="submit"]');button.disabled=true;try{await Cloud.changePassword($('#new-cloud-password').value);modal.close();toast('登录密码已更新');}catch(err){$('#password-error').textContent=err.message;}finally{button.disabled=false;}});
 document.addEventListener('click',e=>{const button=e.target.closest('[data-cloud-action]');if(!button)return;if(button.dataset.cloudAction==='team')showTeam();if(button.dataset.cloudAction==='password')showCloudPassword();if(button.dataset.cloudAction==='logout'){if(pending||saving){toast('请等待评分保存后退出',true);return;}Cloud.logout();}if(button.dataset.cloudAction==='team-csv')exportTeam();});
+
+// Keep visible cards current while colleagues score. Skip redraws if nothing changed.
+let teamRefreshing=false, lastTeamCheck=0;
+async function refreshVisibleScores(){
+  if(!window.Cloud?.member||!state||activeId||modal.open||document.hidden||teamRefreshing||Date.now()-lastTeamCheck<10000)return;
+  teamRefreshing=true;lastTeamCheck=Date.now();const before=Cloud.summary;
+  try{await Cloud.refreshSummary();if(!activeId&&!modal.open&&$('#deck-grid')&&JSON.stringify(before)!==JSON.stringify(Cloud.summary))updateGrid();}
+  catch{/* Keep the last displayed scores on a temporary network failure. */}finally{teamRefreshing=false;}
+}
+if(window.Cloud&&typeof window.setInterval==='function'){window.setInterval(refreshVisibleScores,60000);window.addEventListener('focus',refreshVisibleScores);}

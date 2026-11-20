@@ -143,3 +143,40 @@ grant execute on function public.join_workspace(uuid,text,text), public.get_revi
 insert into storage.buckets(id,name,public,file_size_limit) values('ppt-library','ppt-library',false,104857600) on conflict(id) do nothing;
 create policy team_images_read on storage.objects for select to authenticated using(bucket_id='ppt-library' and public.is_member((storage.foldername(name))[1]::uuid));
 create policy team_images_insert on storage.objects for insert to authenticated with check(bucket_id='ppt-library' and public.is_member((storage.foldername(storage.objects.name))[1]::uuid));
+create or replace function public.delete_review_deck(w uuid, target_id text, expected_revision bigint) returns bigint
+language plpgsql security definer set search_path='' as $$
+declare current_revision bigint;
+begin
+ if not exists (select 1 from public.members where workspace_id=w and user_id=auth.uid() and role='admin') then raise exception '仅管理员可以删除作品'; end if;
+ perform 1 from public.workspaces where id=w for update;
+ select revision into current_revision from public.members where workspace_id=w and user_id=auth.uid() and role='admin' for update;
+ if not found then raise exception '仅管理员可以删除作品'; end if;
+ if current_revision is distinct from expected_revision then raise exception '评审记录已更新，请刷新后重试'; end if;
+ perform 1 from public.decks where workspace_id=w and id=target_id for update;
+ if not found then raise exception '作品不存在或已被删除'; end if;
+ update public.members m set revision=m.revision+1 where m.workspace_id=w and exists (select 1 from public.reviews r where r.workspace_id=w and r.deck_id=target_id and r.user_id=m.user_id);
+ delete from public.reviews where workspace_id=w and deck_id=target_id;
+ delete from public.decks where workspace_id=w and id=target_id;
+ return (select revision from public.members where workspace_id=w and user_id=auth.uid());
+end $$;
+revoke all on function public.delete_review_deck(uuid,text,bigint) from public,anon;
+grant execute on function public.delete_review_deck(uuid,text,bigint) to authenticated;
+-- Average complete reviews per person first, so a page-by-page review has one vote.
+create or replace function public.review_score_summary(w uuid) returns jsonb
+language sql stable security definer set search_path='' as $$
+ with dims as (
+   select dim->>'id' as id from public.workspaces ws cross join lateral jsonb_array_elements(ws.settings->'dimensions') dim
+   where ws.id=w and public.is_member(w)
+ ), personal as (
+   select r.deck_id,r.user_id,avg(case when jsonb_typeof(v.score)='number' then (v.score::text)::numeric end) as mean
+   from public.reviews r join public.decks d on d.workspace_id=r.workspace_id and d.id=r.deck_id
+   cross join dims
+   cross join lateral jsonb_array_elements(case when r.data->>'mode'='page' then d.data->'images' else '[{}]'::jsonb end) im
+   cross join lateral (select case when r.data->>'mode'='page' then r.data#>array['pages',im->>'id','scores',dims.id] else r.data#>array['scores',dims.id] end as score) v
+   where r.workspace_id=w
+   group by r.deck_id,r.user_id having count(*)=count(*) filter(where jsonb_typeof(v.score)='number')
+ ), totals as (select deck_id,count(*) as n,avg(mean) as mean from personal group by deck_id)
+ select coalesce(jsonb_object_agg(deck_id,jsonb_build_object('count',n,'mean',mean)),'{}'::jsonb) from totals
+$$;
+revoke all on function public.review_score_summary(uuid) from public,anon;
+grant execute on function public.review_score_summary(uuid) to authenticated;

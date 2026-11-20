@@ -82,6 +82,7 @@ async function flushSave() {
     const result = await api('/api/state', {method:'PUT',body:JSON.stringify(snapshot)});
     state.revision = result.revision; saveError = false;
     if(result.configRevision!==undefined)state.configRevision=result.configRevision;
+    if(window.Cloud)Cloud.refreshSummary().then(()=>{if($('#deck-grid'))updateGrid();}).catch(()=>toast('评分已保存，团队均分暂未刷新',true));
     setSaveStatus(pending ? '正在保存…' : '已保存到本地');
   } catch (err) {
     pending = true; saveError = true; setSaveStatus('未保存 · 点击重试', true); toast(err.message, true);
@@ -102,7 +103,7 @@ function sidebar() {
 function topbar() {
   return '<header class="topbar"><div class="breadcrumb">个人空间 <span>/</span> <b>'+(activeId?'作品评审':'作品库')+'</b></div><div class="topbar-actions"><span class="local-label"><span class="status-dot"></span>本地作品库</span><div class="mobile-tools"><button class="icon-button" data-action="settings" aria-label="评分设置">'+icon('settings')+'</button><button class="icon-button" data-action="export" aria-label="导出与备份">'+icon('download')+'</button></div><button class="button quiet small" data-action="rescan" title="重新扫描原文件夹">'+icon('refresh')+'<span>刷新图片库</span></button><span class="avatar">观</span></div></header>';
 }
-function filtered() {
+function filtered(team) {
   let list = decks.filter(d => {
     if (view === 'pending' && completed(d.id)) return false;
     if (view === 'rated' && !completed(d.id)) return false;
@@ -110,25 +111,47 @@ function filtered() {
     if (styleFilter && !d.style.includes(styleFilter)) return false;
     return !query || (d.name+' '+review(d.id).note).toLocaleLowerCase().includes(query.toLocaleLowerCase());
   });
-  if (sort === 'high' || sort === 'low') list.sort((a,b) => { const x=average(a.id), y=average(b.id); if(x==null)return y==null?0:1;if(y==null)return -1; return sort==='high'?y-x:x-y; });
+  if (sort === 'high' || sort === 'low') list.sort((a,b) => { const x=team?team[a.id]?.mean:average(a.id), y=team?team[b.id]?.mean:average(b.id); if(x==null)return y==null?0:1;if(y==null)return -1; return sort==='high'?y-x:x-y; });
   if (sort === 'name') list.sort((a,b)=>a.title.localeCompare(b.title,'zh-CN',{numeric:true}));
   if (sort === 'recent') list.sort((a,b)=>(review(b.id).updatedAt||'').localeCompare(review(a.id).updatedAt||''));
   return list;
 }
-function card(d) {
-  const avg = average(d.id), done = completed(d.id), r = review(d.id);
-  return '<article class="deck-card"><div class="card-visual"><button class="cover-button" data-open="'+d.id+'" aria-label="查看 '+esc(d.title)+'"><img src="'+d.images[0].thumb+'" alt="'+esc(d.title)+'预览" loading="lazy"><span class="cover-open">查看整套 '+icon('arrow')+'</span></button><span class="image-count">'+icon('image')+d.images.length+' 张</span><button class="favorite-button '+(r.favorite?'selected':'')+'" data-favorite="'+d.id+'" aria-label="'+(r.favorite?'取消收藏':'收藏')+esc(d.title)+'" aria-pressed="'+!!r.favorite+'">'+icon('heart')+'</button></div><div class="card-content"><div class="card-heading"><button data-open="'+d.id+'" class="card-title">'+esc(d.title)+'</button><span class="score-badge '+(done?'rated':'')+'">'+(avg==null?'—':fmt(avg))+'<small>/ '+state.maxScore+'</small></span></div><div class="card-meta"><span>'+esc(d.style)+'</span><span class="review-state '+(done?'done':'')+'">'+(done?icon('check'):'<i></i>')+statusText(d.id)+'</span></div><div class="card-filmstrip">'+d.images.slice(0,3).map((im,i)=>'<button data-open="'+d.id+'" data-slide="'+i+'" aria-label="查看第 '+(i+1)+' 张"><img src="'+im.thumb+'" alt="" loading="lazy"></button>').join('')+'<button data-open="'+d.id+'" class="filmstrip-more" aria-label="查看全部 '+d.images.length+' 张">'+(d.images.length>3?'+'+(d.images.length-3):icon('arrow'))+'</button></div></div></article>';
+function imageAttr(image,kind) {
+  const path=kind==='thumb'?(image.thumbPath||image.path):image.path;
+  return window.Cloud&&path?'data-cloud-image="'+esc(path)+'"':'src="'+esc(image[kind])+'"';
+}
+let privateImageObserver;
+function observeImages() {
+  if(!window.Cloud)return;
+  function load(img){
+    const path=img.dataset.cloudImage;if(!path||!img.isConnected)return;
+    delete img.dataset.cloudImage;
+    Cloud.imageUrl(path).then(url=>{if(img.isConnected)img.src=url;}).catch(()=>{
+      if(img.isConnected){img.alt='图片暂不可用，请刷新图片库';img.classList.add('image-failed');}
+    });
+  }
+  if(!privateImageObserver&&window.IntersectionObserver)privateImageObserver=new IntersectionObserver(entries=>{
+    for(const entry of entries)if(entry.isIntersecting){privateImageObserver.unobserve(entry.target);load(entry.target);}
+  },{rootMargin:'240px'});
+  privateImageObserver?.disconnect();
+  for(const img of document.querySelectorAll('img[data-cloud-image]')){
+    if(img.loading==='lazy'&&privateImageObserver)privateImageObserver.observe(img);else load(img);
+  }
+}
+function card(d,team) {
+  const avg = team?team.mean:average(d.id), done = completed(d.id), r = review(d.id);
+  return '<article class="deck-card"><div class="card-visual"><button class="cover-button" data-open="'+d.id+'" aria-label="查看 '+esc(d.title)+'"><img '+imageAttr(d.images[0],'thumb')+' alt="'+esc(d.title)+'预览" loading="lazy"><span class="cover-open">查看整套 '+icon('arrow')+'</span></button><span class="image-count">'+icon('image')+d.images.length+' 张</span><button class="favorite-button '+(r.favorite?'selected':'')+'" data-favorite="'+d.id+'" aria-label="'+(r.favorite?'取消收藏':'收藏')+esc(d.title)+'" aria-pressed="'+!!r.favorite+'">'+icon('heart')+'</button></div><div class="card-content"><div class="card-heading"><button data-open="'+d.id+'" class="card-title">'+esc(d.title)+'</button><span class="score-badge '+(avg!=null?'rated':'')+'">'+(team?'<span class="team-score-label">团队均分</span>':'')+(avg==null?'—':fmt(avg))+'<small>/ '+state.maxScore+'</small></span></div><div class="card-meta"><span>'+esc(d.style)+(team?' · '+team.count+' 人已评':'')+'</span><span class="review-state '+(done?'done':'')+'">'+(done?icon('check'):'<i></i>')+(team?(done?'我已评':scoreValues(d.id).length?'我在评':'我待评'):statusText(d.id))+'</span></div><div class="card-filmstrip">'+d.images.slice(0,3).map((im,i)=>'<button data-open="'+d.id+'" data-slide="'+i+'" aria-label="查看第 '+(i+1)+' 张"><img '+imageAttr(im,'thumb')+' alt="" loading="lazy"></button>').join('')+'<button data-open="'+d.id+'" class="filmstrip-more" aria-label="查看全部 '+d.images.length+' 张">'+(d.images.length>3?'+'+(d.images.length-3):icon('arrow'))+'</button></div></div></article>';
 }
 function gallery() {
   const done = decks.filter(d=>completed(d.id)).length;
-  const list = filtered();
+  const team=window.Cloud?Cloud.summary:null, list=filtered(team);
   const title = {all:'作品库',pending:'待评分',rated:'已评分',favorites:'我的收藏'}[view];
-  return '<section class="library-head"><div><div class="eyebrow">THE PRESENTATION COLLECTION</div><h1>'+title+'<span class="title-dot">.</span></h1><p>从视觉到排版，记录你对每一套设计的判断。</p></div><button class="button primary" data-action="import">'+icon('plus')+'导入作品</button></section><section class="collection-summary"><div class="summary-item"><b>'+decks.length+'</b><span>套作品</span></div><div class="summary-item"><b>'+decks.reduce((n,d)=>n+d.images.length,0)+'</b><span>张灵感切片</span></div><div class="summary-item"><b>'+done+'</b><span>套已完成评分</span></div><div class="summary-rule"></div><div class="scoring-summary"><span>当前评分标准</span><b>'+state.dimensions.map(d=>esc(d.name)).join('<i> / </i>')+'<small>'+state.maxScore+' 分制</small></b></div><button class="icon-button" data-action="settings" aria-label="修改评分标准">'+icon('settings')+'</button></section>'+(!sourceAvailable?'<div class="source-warning">原图片文件夹暂不可用。请检查文件夹位置，或点击“导入作品”添加图片。</div>':'')+'<div class="filterbar"><label class="search-field">'+icon('search')+'<input id="search" type="search" placeholder="搜索作品、风格或备注…" aria-label="搜索作品" value="'+esc(query)+'"><kbd>/</kbd></label><div class="filter-controls"><select id="style-filter" aria-label="风格筛选"><option value="">全部风格</option>'+['蓝','青','绿','红','棕','米','黑','灰','紫'].map(x=>'<option value="'+x+'" '+(styleFilter===x?'selected':'')+'>'+x+'色系</option>').join('')+'</select><select id="sort" aria-label="作品排序">'+[['default','默认排序'],['high','评分从高到低'],['low','评分从低到高'],['recent','最近评分'],['name','名称排序']].map(([v,n])=>'<option value="'+v+'" '+(sort===v?'selected':'')+'>'+n+'</option>').join('')+'</select><div class="layout-toggle"><button class="'+(layout==='grid'?'selected':'')+'" data-layout="grid" aria-label="网格视图">'+icon('library')+'</button><button class="'+(layout==='list'?'selected':'')+'" data-layout="list" aria-label="紧凑视图">'+icon('list')+'</button></div></div></div><div class="results-line"><span id="result-count">共 '+list.length+' 套作品</span><span>支持整套 / 逐页评分 · 自动保存</span></div><section id="deck-grid" class="deck-grid '+(layout==='list'?'compact':'')+'" aria-label="PPT作品列表">'+(list.length?list.map(card).join(''):emptyState())+'</section><footer class="library-footer"><span>观页 · 让好设计有迹可循</span><span>图片保留原始比例</span></footer>';
+  return '<section class="library-head"><div><div class="eyebrow">THE PRESENTATION COLLECTION</div><h1>'+title+'<span class="title-dot">.</span></h1><p>从视觉到排版，记录你对每一套设计的判断。</p></div><button class="button primary" data-action="import">'+icon('plus')+'导入作品</button></section><section class="collection-summary"><div class="summary-item"><b>'+decks.length+'</b><span>套作品</span></div><div class="summary-item"><b>'+decks.reduce((n,d)=>n+d.images.length,0)+'</b><span>张灵感切片</span></div><div class="summary-item"><b>'+done+'</b><span>套已完成评分</span></div><div class="summary-rule"></div><div class="scoring-summary"><span>当前评分标准</span><b>'+state.dimensions.map(d=>esc(d.name)).join('<i> / </i>')+'<small>'+state.maxScore+' 分制</small></b></div><button class="icon-button" data-action="settings" aria-label="修改评分标准">'+icon('settings')+'</button></section>'+(!sourceAvailable?'<div class="source-warning">原图片文件夹暂不可用。请检查文件夹位置，或点击“导入作品”添加图片。</div>':'')+'<div class="filterbar"><label class="search-field">'+icon('search')+'<input id="search" type="search" placeholder="搜索作品、风格或备注…" aria-label="搜索作品" value="'+esc(query)+'"><kbd>/</kbd></label><div class="filter-controls"><select id="style-filter" aria-label="风格筛选"><option value="">全部风格</option>'+['蓝','青','绿','红','棕','米','黑','灰','紫'].map(x=>'<option value="'+x+'" '+(styleFilter===x?'selected':'')+'>'+x+'色系</option>').join('')+'</select><select id="sort" aria-label="作品排序">'+[['default','默认排序'],['high','评分从高到低'],['low','评分从低到高'],['recent','最近评分'],['name','名称排序']].map(([v,n])=>'<option value="'+v+'" '+(sort===v?'selected':'')+'>'+n+'</option>').join('')+'</select><div class="layout-toggle"><button class="'+(layout==='grid'?'selected':'')+'" data-layout="grid" aria-label="网格视图">'+icon('library')+'</button><button class="'+(layout==='list'?'selected':'')+'" data-layout="list" aria-label="紧凑视图">'+icon('list')+'</button></div></div></div><div class="results-line"><span id="result-count">共 '+list.length+' 套作品</span><span>支持整套 / 逐页评分 · 自动保存</span></div><section id="deck-grid" class="deck-grid '+(layout==='list'?'compact':'')+'" aria-label="PPT作品列表">'+(list.length?list.map(d=>card(d,team?(team[d.id]||{count:0,mean:null}):null)).join(''):emptyState())+'</section><footer class="library-footer"><span>观页 · 让好设计有迹可循</span><span>图片保留原始比例</span></footer>';
 }
 function emptyState() { return '<div class="empty-state">'+icon('search')+'<h3>这里暂时没有作品</h3><p>试试其他关键词、切换筛选，或导入一套新作品。</p><button class="button" data-action="reset-filter">查看全部作品</button></div>'; }
 function updateGrid() {
-  const list = filtered(); $('#deck-grid').innerHTML = list.length?list.map(card).join(''):emptyState();
-  $('#deck-grid').className = 'deck-grid '+(layout==='list'?'compact':''); $('#result-count').textContent = '共 '+list.length+' 套作品';
+  const team=window.Cloud?Cloud.summary:null, list=filtered(team); $('#deck-grid').innerHTML = list.length?list.map(d=>card(d,team?(team[d.id]||{count:0,mean:null}):null)).join(''):emptyState();
+  observeImages(); $('#deck-grid').className = 'deck-grid '+(layout==='list'?'compact':''); $('#result-count').textContent = '共 '+list.length+' 套作品';
 }
 function scorePanel(d) {
   const r=currentEntry(), perPage=Scoring.mode(review(d.id))==='page', stats=reviewStats(d.id);
@@ -139,20 +162,32 @@ function scorePanel(d) {
   }).join('')+'</div><div class="note-field"><label for="review-note">评审笔记 <span>可选</span></label><textarea id="review-note" maxlength="10000" placeholder="哪些地方值得借鉴？哪些细节可以更好？">'+esc(r.note||'')+'</textarea></div><button class="save-status panel-save" data-action="retry-save"><span class="status-dot"></span>'+(pending?'正在保存…':saveError?'未保存 · 点击重试':'已保存到本地')+'</button><button class="button primary next-review" data-action="'+(perPage?'next-page':'next-pending')+'">'+(perPage?(slide<d.images.length-1?'保存并评下一页':'完成并评下一套'):(done?'继续评审下一套':'保存并评下一套'))+icon('arrow')+'</button><p class="score-footnote">'+(perPage?'整套逐页均分 '+fmt(stats.mean)+' · 所有页面完成后计入团队均分':'综合分为当前评分项的等权平均分')+'</p></aside>';
 }
 function stage(d) {
-  if (overview) return '<div class="contact-sheet">'+d.images.map((im,i)=>'<button data-preview-slide="'+i+'"><img src="'+im.thumb+'" loading="lazy" alt="'+esc(d.title)+' 第 '+(i+1)+' 张"><span>'+String(i+1).padStart(2,'0')+'</span></button>').join('')+'</div>';
-  return '<div class="preview-stage"><button class="stage-arrow previous" data-action="prev-slide" '+(slide===0?'disabled':'')+' aria-label="上一张">'+icon('left')+'</button><button class="main-image-button" data-action="lightbox" aria-label="放大查看原图"><img id="main-image" src="'+d.images[slide].url+'" alt="'+esc(d.title)+' 第 '+(slide+1)+' 张"></button><button class="stage-arrow next" data-action="next-slide" '+(slide===d.images.length-1?'disabled':'')+' aria-label="下一张">'+icon('right')+'</button><span class="stage-hint">'+icon('expand')+'点击图片，查看细节</span></div><div class="slide-bottom"><span class="slide-position">'+String(slide+1).padStart(2,'0')+' <i>/ '+String(d.images.length).padStart(2,'0')+'</i></span><span class="slide-filename" title="'+esc(d.images[slide].name)+'">'+esc(d.images[slide].name)+'</span><span class="key-help"><kbd>←</kbd><kbd>→</kbd> 切换图片</span></div><div class="thumbnail-strip">'+d.images.map((im,i)=>'<button class="thumbnail '+(i===slide?'current':'')+' '+(Scoring.mode(review(d.id))==='page'&&state.dimensions.every(dim=>hasScore(Scoring.page(review(d.id),im).scores[dim.id]))?'page-rated':'')+'" data-slide-index="'+i+'" aria-label="第 '+(i+1)+' 张" aria-current="'+(i===slide)+'"><img src="'+im.thumb+'" alt="" loading="lazy"><span>'+String(i+1).padStart(2,'0')+'</span></button>').join('')+'</div>';
+  if (overview) return '<div class="contact-sheet">'+d.images.map((im,i)=>'<button data-preview-slide="'+i+'"><img '+imageAttr(im,'thumb')+' loading="lazy" alt="'+esc(d.title)+' 第 '+(i+1)+' 张"><span>'+String(i+1).padStart(2,'0')+'</span></button>').join('')+'</div>';
+  return '<div class="preview-stage"><button class="stage-arrow previous" data-action="prev-slide" '+(slide===0?'disabled':'')+' aria-label="上一张">'+icon('left')+'</button><button class="main-image-button" data-action="lightbox" aria-label="放大查看原图"><img id="main-image" '+imageAttr(d.images[slide],'url')+' alt="'+esc(d.title)+' 第 '+(slide+1)+' 张"></button><button class="stage-arrow next" data-action="next-slide" '+(slide===d.images.length-1?'disabled':'')+' aria-label="下一张">'+icon('right')+'</button><span class="stage-hint">'+icon('expand')+'点击图片，查看细节</span></div><div class="slide-bottom"><span class="slide-position">'+String(slide+1).padStart(2,'0')+' <i>/ '+String(d.images.length).padStart(2,'0')+'</i></span><span class="slide-filename" title="'+esc(d.images[slide].name)+'">'+esc(d.images[slide].name)+'</span><span class="key-help"><kbd>←</kbd><kbd>→</kbd> 切换图片</span></div><div class="thumbnail-strip">'+d.images.map((im,i)=>'<button class="thumbnail '+(i===slide?'current':'')+' '+(Scoring.mode(review(d.id))==='page'&&state.dimensions.every(dim=>hasScore(Scoring.page(review(d.id),im).scores[dim.id]))?'page-rated':'')+'" data-slide-index="'+i+'" aria-label="第 '+(i+1)+' 张" aria-current="'+(i===slide)+'"><img '+imageAttr(im,'thumb')+' alt="" loading="lazy"><span>'+String(i+1).padStart(2,'0')+'</span></button>').join('')+'</div>';
 }
 function detail() {
   const d=activeDeck(); if(!d) return '<div class="empty-state">作品不存在，请返回作品库。</div>';
   slide=Math.max(0,Math.min(slide,d.images.length-1));
-  return '<div class="detail-breadcrumb"><button class="text-button" data-action="back">'+icon('left')+'返回作品库</button><span>整套 / 逐页自由切换</span></div><div class="detail-heading"><div><span class="style-label">'+esc(d.style)+' <i>·</i> '+d.images.length+' 张图片</span><h1>'+esc(d.title)+'</h1></div><div class="detail-actions"><button class="button '+(review(d.id).favorite?'is-favorite':'')+'" data-favorite="'+d.id+'">'+icon('heart')+(review(d.id).favorite?'已收藏':'收藏作品')+'</button><button class="button" data-action="append">'+icon('plus')+'添加图片</button></div></div><div class="review-layout"><section class="viewer"><div class="viewer-toolbar"><div class="segmented"><button data-overview="false" class="'+(!overview?'selected':'')+'">'+icon('image')+'单图浏览</button><button data-overview="true" class="'+(overview?'selected':'')+'">'+icon('library')+'整套总览</button></div><button class="icon-button" data-action="lightbox" aria-label="放大当前图片">'+icon('expand')+'</button></div><div id="stage-container">'+stage(d)+'</div></section><div id="panel-container">'+scorePanel(d)+'</div></div>';
+  return '<div class="detail-breadcrumb"><button class="text-button" data-action="back">'+icon('left')+'返回作品库</button><span>整套 / 逐页自由切换</span></div><div class="detail-heading"><div><span class="style-label">'+esc(d.style)+' <i>·</i> '+d.images.length+' 张图片</span><h1>'+esc(d.title)+'</h1></div><div class="detail-actions">'+(window.Cloud?.member?.role==='admin'?'<button class="button delete-work" data-action="delete-work">删除作品</button>':'')+'<button class="button '+(review(d.id).favorite?'is-favorite':'')+'" data-favorite="'+d.id+'">'+icon('heart')+(review(d.id).favorite?'已收藏':'收藏作品')+'</button><button class="button" data-action="append">'+icon('plus')+'添加图片</button></div></div><div class="review-layout"><section class="viewer"><div class="viewer-toolbar"><div class="segmented"><button data-overview="false" class="'+(!overview?'selected':'')+'">'+icon('image')+'单图浏览</button><button data-overview="true" class="'+(overview?'selected':'')+'">'+icon('library')+'整套总览</button></div><button class="icon-button" data-action="lightbox" aria-label="放大当前图片">'+icon('expand')+'</button></div><div id="stage-container">'+stage(d)+'</div></section><div id="panel-container">'+scorePanel(d)+'</div></div>';
 }
 function render() {
   $('#app').innerHTML = sidebar()+'<div class="main-shell">'+topbar()+'<main class="main-content '+(activeId?'detail-content':'')+'">'+(activeId?detail():gallery())+'</main></div>';
   if(window.Cloud)decorateCloud();
+  observeImages();
 }
-function renderDetail() { const d=activeDeck(); if(d) $('.main-content').innerHTML=detail(); }
+function renderDetail() { const d=activeDeck(); if(d){$('.main-content').innerHTML=detail();observeImages();} }
 let returnScroll=0;
+function confirmDeleteWork(){
+  const d=activeDeck();if(!d||window.Cloud?.member?.role!=='admin')return;
+  showModal(modalHeader('删除作品','确认从团队作品库移除这套作品？')+'<p class="delete-description"><strong>'+esc(d.title)+'</strong><br>这套作品的所有评审评分和备注也会被删除，无法撤销。</p><div class="modal-footer"><button class="button" data-action="close-modal" autofocus>取消</button><button class="button delete-work" id="confirm-delete">确认删除</button></div>');
+  const confirm=$('#confirm-delete');confirm.onclick=async()=>{
+    confirm.disabled=true;
+    try{if(!await flushSave())return;
+      const revision=await api('/api/delete-deck',{method:'POST',body:JSON.stringify({target_id:d.id,expected_revision:state.revision})});
+      state.revision=revision;delete state.reviews[d.id];decks=decks.filter(item=>item.id!==d.id);modal.close();backToLibrary();toast('已删除「'+d.title+'」');
+    }catch(err){toast(err.message,true);}finally{confirm.disabled=false;}
+  };
+}
 function openDeck(id, index=0) {
   if(!activeId) returnScroll=window.scrollY;
   activeId=id;slide=index;overview=false;
@@ -163,7 +198,7 @@ function changeSlide(index) {
   const d=activeDeck(); if(!d)return;
   slide=Math.max(0,Math.min(index,d.images.length-1));
   if(lightbox.open) return renderLightbox();
-  overview=false; $('#stage-container').innerHTML=stage(d);
+  overview=false; $('#stage-container').innerHTML=stage(d);observeImages();
   if(Scoring.mode(review(d.id))==='page'){$('#panel-container').innerHTML=scorePanel(d);if(window.Cloud)decorateCloud();}
   $$('.segmented button').forEach(b=>b.classList.toggle('selected',b.dataset.overview==='false'));
   $('.thumbnail.current')?.scrollIntoView({block:'nearest',inline:'nearest'});
@@ -199,7 +234,7 @@ async function applySettings(e) {
   if(!Number.isFinite(maximum)||maximum<1||maximum>100){err.textContent='满分应在 1 至 100 之间。';return;}
   if(maximum!==state.maxScore) Object.values(state.reviews).forEach(r=>Scoring.rescale(r,state.maxScore,maximum));
   state.maxScore=maximum;state.dimensions=dimensions;queueSave();modal.close();render();
-  if(await flushSave())toast('评分标准已更新');
+  if(await flushSave()){toast('评分标准已更新');}
 }
 function showImport(target=null) {
   importMode=target?'append':'new'; selectedFiles=[];importBusy=false;
@@ -327,7 +362,8 @@ async function restoreBackup() {
 function renderLightbox() {
   const d=activeDeck();if(!d)return;
   lightbox.className=lightZoom?'zoomed':'';
-  lightbox.innerHTML='<div class="lightbox-toolbar"><div><b>'+esc(d.title)+'</b><span>'+String(slide+1).padStart(2,'0')+' / '+d.images.length+'</span></div><div><button class="button light" data-action="zoom">'+(lightZoom?'适应窗口':'放大查看')+'</button><button class="icon-button" data-action="close-lightbox" aria-label="关闭大图">'+icon('close')+'</button></div></div><div class="lightbox-canvas"><img src="'+d.images[slide].url+'" alt="'+esc(d.title)+' 第 '+(slide+1)+' 张" data-action="zoom"></div><button class="lightbox-arrow lb-prev" data-action="prev-slide" aria-label="上一张" '+(slide===0?'disabled':'')+'>'+icon('left')+'</button><button class="lightbox-arrow lb-next" data-action="next-slide" aria-label="下一张" '+(slide===d.images.length-1?'disabled':'')+'>'+icon('right')+'</button>';
+  lightbox.innerHTML='<div class="lightbox-toolbar"><div><b>'+esc(d.title)+'</b><span>'+String(slide+1).padStart(2,'0')+' / '+d.images.length+'</span></div><div><button class="button light" data-action="zoom">'+(lightZoom?'适应窗口':'放大查看')+'</button><button class="icon-button" data-action="close-lightbox" aria-label="关闭大图">'+icon('close')+'</button></div></div><div class="lightbox-canvas"><img '+imageAttr(d.images[slide],'url')+' alt="'+esc(d.title)+' 第 '+(slide+1)+' 张" data-action="zoom"></div><button class="lightbox-arrow lb-prev" data-action="prev-slide" aria-label="上一张" '+(slide===0?'disabled':'')+'>'+icon('left')+'</button><button class="lightbox-arrow lb-next" data-action="next-slide" aria-label="下一张" '+(slide===d.images.length-1?'disabled':'')+'>'+icon('right')+'</button>';
+  observeImages();
 }
 function openLightbox() { lightZoom=false;renderLightbox();lightbox.showModal(); }
 async function rescan() {
@@ -343,7 +379,7 @@ async function nextPending() {
 
 document.addEventListener('click', e => {
   const button=e.target.closest('button, a[data-action]');if(!button||button.disabled)return;
-  if(button.dataset.open){openDeck(button.dataset.open,Number(button.dataset.slide||0));return;}
+  if(button.dataset.open){if(modal.open)modal.close();openDeck(button.dataset.open,Number(button.dataset.slide||0));return;}
   if(button.dataset.view){view=button.dataset.view;activeId=null;query='';styleFilter='';history.pushState(null,'',location.pathname);render();window.scrollTo(0,0);return;}
   if(button.dataset.favorite){
     const r=mutableReview(button.dataset.favorite);r.favorite=!r.favorite;queueSave();
@@ -363,6 +399,7 @@ document.addEventListener('click', e => {
     case 'settings':showSettings();break;
     case 'export':showExport();break;
     case 'import':showImport();break;
+    case 'delete-work':confirmDeleteWork();break;
     case 'append':showImport(activeId);break;
     case 'close-modal':if(!importBusy)modal.close();break;
     case 'rescan':rescan();break;
