@@ -21,7 +21,7 @@ const paths = {
 };
 const icon = (name, cls = '') => '<svg class="icon '+cls+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+(paths[name] || paths.image)+'</svg>';
 let decks = [], state, source = '', sourceAvailable = true;
-let view = 'all', query = '', sort = 'default', styleFilter = '', layout = 'grid';
+let view = 'all', query = '', sort = 'default', styleFilter = '', classificationFilter = '', layout = 'grid';
 let activeId = null, slide = 0, overview = false, lightZoom = false;
 let saveTimer, saveFlight, saving = false, pending = false, saveError = false, toastTimer;
 let selectedFiles = [], importMode = 'new', importBusy = false, restoreFile;
@@ -35,6 +35,45 @@ const average = id => reviewStats(id).mean;
 const fmt = n => n == null ? '—' : Number(n.toFixed(2)).toString();
 const activeDeck = () => decks.find(d => d.id === activeId);
 const statusText = id => completed(id) ? '已评分' : scoreValues(id).length ? '评分中' : '待评分';
+const formalScoreValue = value => hasScore(value) ? value : null;
+const formalDeckScore = team => formalScoreValue(team?.formalScore);
+const formalPageScore = (team, pageId) => formalScoreValue(team?.formalPageScores?.[pageId]);
+function effectiveDeckScore(d, team) {
+  const formal = team ? formalDeckScore(team) : null;
+  if (formal !== null) return {value:formal, formal:true, source:'formal'};
+  const fallback = formalScoreValue(team ? team.mean : average(d.id));
+  return {value:fallback, formal:false, source:team ? 'team' : 'local'};
+}
+const scoreSourceLabel = score => score.formal ? '正式分' : score.source === 'team' ? '团队均分' : '';
+function formalScoreBadge(label, value, classes = '') {
+  if (value === null) return '';
+  return '<span class="formal-score '+classes+'"><span>'+label+'</span><b>'+fmt(value)+'</b><small>/ '+state.maxScore+'</small></span>';
+}
+const aiBadge = d => d.aiLabel ? '<span class="ai-label" style="display:inline-flex;align-items:center;padding:2px 7px;margin-left:6px;border-radius:999px;background:#eef5f2;color:#2f6654;font-size:11px;font-weight:600;white-space:nowrap">' + esc(d.aiLabel) + '</span>' : '';
+
+const cleanMetadata = value => typeof value === 'string' ? value.trim() : '';
+const deckStyle = d => cleanMetadata(d?.effectiveStyle) || cleanMetadata(d?.style);
+const deckClassification = d => cleanMetadata(d?.effectiveClassification) || cleanMetadata(d?.classification) || cleanMetadata(d?.category) || cleanMetadata(d?.primaryClassification);
+const classificationIsAI = d => Boolean(deckClassification(d)) && cleanMetadata(d?.classificationSource).toLowerCase() === 'ai';
+const deckSearchText = d => [d?.name, d?.title, deckStyle(d), deckClassification(d), classificationIsAI(d) ? 'AI 建议' : '', review(d.id).note].filter(Boolean).join(' ').toLowerCase();
+const classificationTag = d => {
+  const value = deckClassification(d);
+  if (!value) return '';
+  const ai = classificationIsAI(d), label = (ai ? 'AI 建议 · ' : '分类 · ') + value;
+  return '<span class="classification-tag' + (ai ? ' ai-suggestion' : '') + '" aria-label="' + esc(label) + '">' + esc(label) + '</span>';
+};
+const classificationOptions = () => {
+  const counts = new Map();
+  for (const d of decks) {
+    const value = deckClassification(d);
+    if (value) counts.set(value, (counts.get(value) || 0) + 1);
+  }
+  return [...counts].sort(([a], [b]) => a.localeCompare(b, 'zh-CN', {numeric:true}));
+};
+function classificationFilterSelect(options) {
+  if (!options.length) return '';
+  return '<select id="classification-filter" aria-label="分类筛选"><option value="">全部分类</option>' + options.map(([value, count]) => '<option value="' + esc(value) + '" ' + (classificationFilter === value ? 'selected' : '') + '>' + esc(value) + ' · ' + count + '</option>').join('') + '</select>';
+}
 
 async function api(url, options = {}) {
   if(window.Cloud)return Cloud.request(url,options);
@@ -104,14 +143,22 @@ function topbar() {
   return '<header class="topbar"><div class="breadcrumb">个人空间 <span>/</span> <b>'+(activeId?'作品评审':'作品库')+'</b></div><div class="topbar-actions"><span class="local-label"><span class="status-dot"></span>本地作品库</span><div class="mobile-tools"><button class="icon-button" data-action="settings" aria-label="评分设置">'+icon('settings')+'</button><button class="icon-button" data-action="export" aria-label="导出与备份">'+icon('download')+'</button></div><button class="button quiet small" data-action="rescan" title="重新扫描原文件夹">'+icon('refresh')+'<span>刷新图片库</span></button><span class="avatar">观</span></div></header>';
 }
 function filtered(team) {
+  const options = classificationOptions();
+  if (classificationFilter && !options.some(([value]) => value === classificationFilter)) classificationFilter = '';
+  const needle = query.trim().toLowerCase();
   let list = decks.filter(d => {
     if (view === 'pending' && completed(d.id)) return false;
     if (view === 'rated' && !completed(d.id)) return false;
     if (view === 'favorites' && !review(d.id).favorite) return false;
-    if (styleFilter && !d.style.includes(styleFilter)) return false;
-    return !query || (d.name+' '+review(d.id).note).toLocaleLowerCase().includes(query.toLocaleLowerCase());
+    const style = deckStyle(d);
+    if (styleFilter && !style.includes(styleFilter)) return false;
+    if (classificationFilter && deckClassification(d) !== classificationFilter) return false;
+    return !needle || deckSearchText(d).includes(needle);
   });
-  if (sort === 'high' || sort === 'low') list.sort((a,b) => { const x=team?team[a.id]?.mean:average(a.id), y=team?team[b.id]?.mean:average(b.id); if(x==null)return y==null?0:1;if(y==null)return -1; return sort==='high'?y-x:x-y; });
+  if (sort === 'high' || sort === 'low') {
+    const scores = new Map(list.map(d => [d.id, effectiveDeckScore(d, team ? (team[d.id] || {count:0,mean:null}) : null).value]));
+    list.sort((a,b) => { const x=scores.get(a.id), y=scores.get(b.id); if(x==null)return y==null?0:1;if(y==null)return -1; return sort==='high'?y-x:x-y; });
+  }
   if (sort === 'name') list.sort((a,b)=>a.title.localeCompare(b.title,'zh-CN',{numeric:true}));
   if (sort === 'recent') list.sort((a,b)=>(review(b.id).updatedAt||'').localeCompare(review(a.id).updatedAt||''));
   return list;
@@ -139,14 +186,14 @@ function observeImages() {
   }
 }
 function card(d,team) {
-  const avg = team?team.mean:average(d.id), done = completed(d.id), r = review(d.id);
-  return '<article class="deck-card"><div class="card-visual"><button class="cover-button" data-open="'+d.id+'" aria-label="查看 '+esc(d.title)+'"><img '+imageAttr(d.images[0],'thumb')+' alt="'+esc(d.title)+'预览" loading="lazy"><span class="cover-open">查看整套 '+icon('arrow')+'</span></button><span class="image-count">'+icon('image')+d.images.length+' 张</span><button class="favorite-button '+(r.favorite?'selected':'')+'" data-favorite="'+d.id+'" aria-label="'+(r.favorite?'取消收藏':'收藏')+esc(d.title)+'" aria-pressed="'+!!r.favorite+'">'+icon('heart')+'</button></div><div class="card-content"><div class="card-heading"><button data-open="'+d.id+'" class="card-title">'+esc(d.title)+'</button><span class="score-badge '+(avg!=null?'rated':'')+'">'+(team?'<span class="team-score-label">团队均分</span>':'')+(avg==null?'—':fmt(avg))+'<small>/ '+state.maxScore+'</small></span></div><div class="card-meta"><span>'+esc(d.style)+(team?' · '+team.count+' 人已评':'')+'</span><span class="review-state '+(done?'done':'')+'">'+(done?icon('check'):'<i></i>')+(team?(done?'我已评':scoreValues(d.id).length?'我在评':'我待评'):statusText(d.id))+'</span></div><div class="card-filmstrip">'+d.images.slice(0,3).map((im,i)=>'<button data-open="'+d.id+'" data-slide="'+i+'" aria-label="查看第 '+(i+1)+' 张"><img '+imageAttr(im,'thumb')+' alt="" loading="lazy"></button>').join('')+'<button data-open="'+d.id+'" class="filmstrip-more" aria-label="查看全部 '+d.images.length+' 张">'+(d.images.length>3?'+'+(d.images.length-3):icon('arrow'))+'</button></div></div></article>';
+  const score = effectiveDeckScore(d,team), avg = score.value, done = completed(d.id), r = review(d.id), sourceLabel = scoreSourceLabel(score), sourceClass = score.formal ? ' formal' : '';
+  return '<article class="deck-card"><div class="card-visual"><button class="cover-button" data-open="'+d.id+'" aria-label="查看 '+esc(d.title)+'"><img '+imageAttr(d.images[0],'thumb')+' alt="'+esc(d.title)+'预览" loading="lazy"><span class="cover-open">查看整套 '+icon('arrow')+'</span></button><span class="image-count">'+icon('image')+d.images.length+' 张</span><button class="favorite-button '+(r.favorite?'selected':'')+'" data-favorite="'+d.id+'" aria-label="'+(r.favorite?'取消收藏':'收藏')+esc(d.title)+'" aria-pressed="'+!!r.favorite+'">'+icon('heart')+'</button></div><div class="card-content"><div class="card-heading"><button data-open="'+d.id+'" class="card-title">'+esc(d.title)+'</button><span class="score-badge '+(avg!=null?'rated':'')+'">'+(sourceLabel?'<span class="team-score-label score-source-label'+sourceClass+'">'+sourceLabel+'</span>':'')+(avg==null?'—':fmt(avg))+'<small>/ '+state.maxScore+'</small></span></div><div class="card-meta"><span class="card-taxonomy">'+esc(deckStyle(d))+(team?' · '+team.count+' 人已评':'')+aiBadge(d)+classificationTag(d)+'</span><span class="review-state '+(done?'done':'')+'">'+(done?icon('check'):'<i></i>')+(team?(done?'我已评':scoreValues(d.id).length?'我在评':'我待评'):statusText(d.id))+'</span></div><div class="card-filmstrip">'+d.images.slice(0,3).map((im,i)=>'<button data-open="'+d.id+'" data-slide="'+i+'" aria-label="查看第 '+(i+1)+' 张"><img '+imageAttr(im,'thumb')+' alt="" loading="lazy"></button>').join('')+'<button data-open="'+d.id+'" class="filmstrip-more" aria-label="查看全部 '+d.images.length+' 张">'+(d.images.length>3?'+'+(d.images.length-3):icon('arrow'))+'</button></div></div></article>';
 }
 function gallery() {
   const done = decks.filter(d=>completed(d.id)).length;
-  const team=window.Cloud?Cloud.summary:null, list=filtered(team);
+  const team=window.Cloud?Cloud.summary:null, list=filtered(team), categoryOptions=classificationOptions();
   const title = {all:'作品库',pending:'待评分',rated:'已评分',favorites:'我的收藏'}[view];
-  return '<section class="library-head"><div><div class="eyebrow">THE PRESENTATION COLLECTION</div><h1>'+title+'<span class="title-dot">.</span></h1><p>从视觉到排版，记录你对每一套设计的判断。</p></div><button class="button primary" data-action="import">'+icon('plus')+'导入作品</button></section><section class="collection-summary"><div class="summary-item"><b>'+decks.length+'</b><span>套作品</span></div><div class="summary-item"><b>'+decks.reduce((n,d)=>n+d.images.length,0)+'</b><span>张灵感切片</span></div><div class="summary-item"><b>'+done+'</b><span>套已完成评分</span></div><div class="summary-rule"></div><div class="scoring-summary"><span>当前评分标准</span><b>'+state.dimensions.map(d=>esc(d.name)).join('<i> / </i>')+'<small>'+state.maxScore+' 分制</small></b></div><button class="icon-button" data-action="settings" aria-label="修改评分标准">'+icon('settings')+'</button></section>'+(!sourceAvailable?'<div class="source-warning">原图片文件夹暂不可用。请检查文件夹位置，或点击“导入作品”添加图片。</div>':'')+'<div class="filterbar"><label class="search-field">'+icon('search')+'<input id="search" type="search" placeholder="搜索作品、风格或备注…" aria-label="搜索作品" value="'+esc(query)+'"><kbd>/</kbd></label><div class="filter-controls"><select id="style-filter" aria-label="风格筛选"><option value="">全部风格</option>'+['蓝','青','绿','红','棕','米','黑','灰','紫'].map(x=>'<option value="'+x+'" '+(styleFilter===x?'selected':'')+'>'+x+'色系</option>').join('')+'</select><select id="sort" aria-label="作品排序">'+[['default','默认排序'],['high','评分从高到低'],['low','评分从低到高'],['recent','最近评分'],['name','名称排序']].map(([v,n])=>'<option value="'+v+'" '+(sort===v?'selected':'')+'>'+n+'</option>').join('')+'</select><div class="layout-toggle"><button class="'+(layout==='grid'?'selected':'')+'" data-layout="grid" aria-label="网格视图">'+icon('library')+'</button><button class="'+(layout==='list'?'selected':'')+'" data-layout="list" aria-label="紧凑视图">'+icon('list')+'</button></div></div></div><div class="results-line"><span id="result-count">共 '+list.length+' 套作品</span><span>支持整套 / 逐页评分 · 自动保存</span></div><section id="deck-grid" class="deck-grid '+(layout==='list'?'compact':'')+'" aria-label="PPT作品列表">'+(list.length?list.map(d=>card(d,team?(team[d.id]||{count:0,mean:null}):null)).join(''):emptyState())+'</section><footer class="library-footer"><span>观页 · 让好设计有迹可循</span><span>图片保留原始比例</span></footer>';
+  return '<section class="library-head"><div><div class="eyebrow">THE PRESENTATION COLLECTION</div><h1>'+title+'<span class="title-dot">.</span></h1><p>从视觉到排版，记录你对每一套设计的判断。</p></div><button class="button primary" data-action="import">'+icon('plus')+'导入作品</button></section><section class="collection-summary"><div class="summary-item"><b>'+decks.length+'</b><span>套作品</span></div><div class="summary-item"><b>'+decks.reduce((n,d)=>n+d.images.length,0)+'</b><span>张灵感切片</span></div><div class="summary-item"><b>'+done+'</b><span>套已完成评分</span></div><div class="summary-rule"></div><div class="scoring-summary"><span>当前评分标准</span><b>'+state.dimensions.map(d=>esc(d.name)).join('<i> / </i>')+'<small>'+state.maxScore+' 分制</small></b></div><button class="icon-button" data-action="settings" aria-label="修改评分标准">'+icon('settings')+'</button></section>'+(!sourceAvailable?'<div class="source-warning">原图片文件夹暂不可用。请检查文件夹位置，或点击“导入作品”添加图片。</div>':'')+'<div class="filterbar"><label class="search-field">'+icon('search')+'<input id="search" type="search" placeholder="搜索作品、风格、分类或备注…" aria-label="搜索作品" value="'+esc(query)+'"><kbd>/</kbd></label><div class="filter-controls"><select id="style-filter" aria-label="风格筛选"><option value="">全部风格</option>'+['蓝','青','绿','红','棕','米','黑','灰','紫'].map(x=>'<option value="'+x+'" '+(styleFilter===x?'selected':'')+'>'+x+'色系</option>').join('')+'</select>'+classificationFilterSelect(categoryOptions)+'<select id="sort" aria-label="作品排序">'+[['default','默认排序'],['high','评分从高到低'],['low','评分从低到高'],['recent','最近评分'],['name','名称排序']].map(([v,n])=>'<option value="'+v+'" '+(sort===v?'selected':'')+'>'+n+'</option>').join('')+'</select><div class="layout-toggle"><button class="'+(layout==='grid'?'selected':'')+'" data-layout="grid" aria-label="网格视图">'+icon('library')+'</button><button class="'+(layout==='list'?'selected':'')+'" data-layout="list" aria-label="紧凑视图">'+icon('list')+'</button></div></div></div><div class="results-line"><span id="result-count">共 '+list.length+' 套作品</span><span>支持整套 / 逐页评分 · 自动保存</span></div><section id="deck-grid" class="deck-grid '+(layout==='list'?'compact':'')+'" aria-label="PPT作品列表">'+(list.length?list.map(d=>card(d,team?(team[d.id]||{count:0,mean:null}):null)).join(''):emptyState())+'</section><footer class="library-footer"><span>观页 · 让好设计有迹可循</span><span>图片保留原始比例</span></footer>';
 }
 function emptyState() { return '<div class="empty-state">'+icon('search')+'<h3>这里暂时没有作品</h3><p>试试其他关键词、切换筛选，或导入一套新作品。</p><button class="button" data-action="reset-filter">查看全部作品</button></div>'; }
 function updateGrid() {
@@ -162,13 +209,15 @@ function scorePanel(d) {
   }).join('')+'</div><div class="note-field"><label for="review-note">评审笔记 <span>可选</span></label><textarea id="review-note" maxlength="10000" placeholder="哪些地方值得借鉴？哪些细节可以更好？">'+esc(r.note||'')+'</textarea></div><button class="save-status panel-save" data-action="retry-save"><span class="status-dot"></span>'+(pending?'正在保存…':saveError?'未保存 · 点击重试':'已保存到本地')+'</button><button class="button primary next-review" data-action="'+(perPage?'next-page':'next-pending')+'">'+(perPage?(slide<d.images.length-1?'保存并评下一页':'完成并评下一套'):(done?'继续评审下一套':'保存并评下一套'))+icon('arrow')+'</button><p class="score-footnote">'+(perPage?'整套逐页均分 '+fmt(stats.mean)+' · 所有页面完成后计入团队均分':'综合分为当前评分项的等权平均分')+'</p></aside>';
 }
 function stage(d) {
+  const team=window.Cloud?Cloud.summary?.[d.id]:null, pageFormal=formalPageScore(team,d.images[slide].id);
   if (overview) return '<div class="contact-sheet">'+d.images.map((im,i)=>'<button data-preview-slide="'+i+'"><img '+imageAttr(im,'thumb')+' loading="lazy" alt="'+esc(d.title)+' 第 '+(i+1)+' 张"><span>'+String(i+1).padStart(2,'0')+'</span></button>').join('')+'</div>';
-  return '<div class="preview-stage"><button class="stage-arrow previous" data-action="prev-slide" '+(slide===0?'disabled':'')+' aria-label="上一张">'+icon('left')+'</button><button class="main-image-button" data-action="lightbox" aria-label="放大查看原图"><img id="main-image" '+imageAttr(d.images[slide],'url')+' alt="'+esc(d.title)+' 第 '+(slide+1)+' 张"></button><button class="stage-arrow next" data-action="next-slide" '+(slide===d.images.length-1?'disabled':'')+' aria-label="下一张">'+icon('right')+'</button><span class="stage-hint">'+icon('expand')+'点击图片，查看细节</span></div><div class="slide-bottom"><span class="slide-position">'+String(slide+1).padStart(2,'0')+' <i>/ '+String(d.images.length).padStart(2,'0')+'</i></span><span class="slide-filename" title="'+esc(d.images[slide].name)+'">'+esc(d.images[slide].name)+'</span><span class="key-help"><kbd>←</kbd><kbd>→</kbd> 切换图片</span></div><div class="thumbnail-strip">'+d.images.map((im,i)=>'<button class="thumbnail '+(i===slide?'current':'')+' '+(Scoring.mode(review(d.id))==='page'&&state.dimensions.every(dim=>hasScore(Scoring.page(review(d.id),im).scores[dim.id]))?'page-rated':'')+'" data-slide-index="'+i+'" aria-label="第 '+(i+1)+' 张" aria-current="'+(i===slide)+'"><img '+imageAttr(im,'thumb')+' alt="" loading="lazy"><span>'+String(i+1).padStart(2,'0')+'</span></button>').join('')+'</div>';
+  return '<div class="preview-stage"><button class="stage-arrow previous" data-action="prev-slide" '+(slide===0?'disabled':'')+' aria-label="上一张">'+icon('left')+'</button><button class="main-image-button" data-action="lightbox" aria-label="放大查看原图"><img id="main-image" '+imageAttr(d.images[slide],'url')+' alt="'+esc(d.title)+' 第 '+(slide+1)+' 张"></button><button class="stage-arrow next" data-action="next-slide" '+(slide===d.images.length-1?'disabled':'')+' aria-label="下一张">'+icon('right')+'</button><span class="stage-hint">'+icon('expand')+'点击图片，查看细节</span></div><div class="slide-bottom"><span class="slide-position">'+String(slide+1).padStart(2,'0')+' <i>/ '+String(d.images.length).padStart(2,'0')+'</i></span><span class="slide-filename" title="'+esc(d.images[slide].name)+'">'+esc(d.images[slide].name)+'</span><span class="key-help"><kbd>←</kbd><kbd>→</kbd> 切换图片</span></div>'+(pageFormal===null?'':'<div class="page-formal-line">'+formalScoreBadge('本页正式分',pageFormal,'page-formal-score')+'</div>')+'<div class="thumbnail-strip">'+d.images.map((im,i)=>'<button class="thumbnail '+(i===slide?'current':'')+' '+(Scoring.mode(review(d.id))==='page'&&state.dimensions.every(dim=>hasScore(Scoring.page(review(d.id),im).scores[dim.id]))?'page-rated':'')+'" data-slide-index="'+i+'" aria-label="第 '+(i+1)+' 张" aria-current="'+(i===slide)+'"><img '+imageAttr(im,'thumb')+' alt="" loading="lazy"><span>'+String(i+1).padStart(2,'0')+'</span></button>').join('')+'</div>';
 }
 function detail() {
   const d=activeDeck(); if(!d) return '<div class="empty-state">作品不存在，请返回作品库。</div>';
   slide=Math.max(0,Math.min(slide,d.images.length-1));
-  return '<div class="detail-breadcrumb"><button class="text-button" data-action="back">'+icon('left')+'返回作品库</button><span>整套 / 逐页自由切换</span></div><div class="detail-heading"><div><span class="style-label">'+esc(d.style)+' <i>·</i> '+d.images.length+' 张图片</span><h1>'+esc(d.title)+'</h1></div><div class="detail-actions">'+(window.Cloud?.member?.role==='admin'?'<button class="button delete-work" data-action="delete-work">删除作品</button>':'')+'<button class="button '+(review(d.id).favorite?'is-favorite':'')+'" data-favorite="'+d.id+'">'+icon('heart')+(review(d.id).favorite?'已收藏':'收藏作品')+'</button><button class="button" data-action="append">'+icon('plus')+'添加图片</button></div></div><div class="review-layout"><section class="viewer"><div class="viewer-toolbar"><div class="segmented"><button data-overview="false" class="'+(!overview?'selected':'')+'">'+icon('image')+'单图浏览</button><button data-overview="true" class="'+(overview?'selected':'')+'">'+icon('library')+'整套总览</button></div><button class="icon-button" data-action="lightbox" aria-label="放大当前图片">'+icon('expand')+'</button></div><div id="stage-container">'+stage(d)+'</div></section><div id="panel-container">'+scorePanel(d)+'</div></div>';
+  const team=window.Cloud?Cloud.summary?.[d.id]:null;
+  return '<div class="detail-breadcrumb"><button class="text-button" data-action="back">'+icon('left')+'返回作品库</button><span>整套 / 逐页自由切换</span></div><div class="detail-heading"><div><span class="style-label">'+esc(deckStyle(d))+' <i>·</i> '+d.images.length+' 张图片'+aiBadge(d)+classificationTag(d)+'</span>'+formalScoreBadge('整套正式分',formalDeckScore(team),'whole-formal-score')+'<h1>'+esc(d.title)+'</h1></div><div class="detail-actions">'+(window.Cloud?.member?.role==='admin'?'<button class="button delete-work" data-action="delete-work">删除作品</button>':'')+'<button class="button '+(review(d.id).favorite?'is-favorite':'')+'" data-favorite="'+d.id+'">'+icon('heart')+(review(d.id).favorite?'已收藏':'收藏作品')+'</button><button class="button" data-action="append">'+icon('plus')+'添加图片</button></div></div><div class="review-layout"><section class="viewer"><div class="viewer-toolbar"><div class="segmented"><button data-overview="false" class="'+(!overview?'selected':'')+'">'+icon('image')+'单图浏览</button><button data-overview="true" class="'+(overview?'selected':'')+'">'+icon('library')+'整套总览</button></div><button class="icon-button" data-action="lightbox" aria-label="放大当前图片">'+icon('expand')+'</button></div><div id="stage-container">'+stage(d)+'</div></section><div id="panel-container">'+scorePanel(d)+'</div></div>';
 }
 function render() {
   $('#app').innerHTML = sidebar()+'<div class="main-shell">'+topbar()+'<main class="main-content '+(activeId?'detail-content':'')+'">'+(activeId?detail():gallery())+'</main></div>';
@@ -249,11 +298,19 @@ function showImport(target=null) {
   if(!target)$('#import-name').placeholder='可选：单份文件导入时自定义名称';
   $('#import-submit').textContent=target?'追加到作品':'导入作品';
   if(window.Cloud){
-    $('h3',zone).textContent='拖入 PDF 或图片';
-    $('p',zone).textContent='PDF 自动转为逐页预览 · PPT 请先另存为 PDF';
-    $('[data-action="choose-documents"]',zone).textContent='选择 PDF';
-    $('#document-files').accept='.pdf,application/pdf';
-    $('.import-note').textContent='在线版支持 PDF 和图片；直接导入 PPT / PPTX 请使用本机版，再导入生成的图片。';
+    if(Cloud.aiAvailable){
+      $('h3',zone).textContent='拖入 PPT、PDF 或图片';
+      $('p',zone).textContent='单份 PPT / PPTX ≤ 25 MB；PDF 自动转为逐页预览，每批最多 100 MB';
+      $('[data-action="choose-documents"]',zone).textContent='选择 PPT / PDF';
+      $('#document-files').accept='.ppt,.pptx,.pdf,application/pdf,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation';
+      $('.import-note').textContent='单份 PPT / PPTX（≤ 25 MB）可直接导入素材库；追加请先转 PDF。多份/混合使用 AI 工作台会合并为一套，想各自成套请逐份导入或先转 PDF。';
+    }else{
+      $('h3',zone).textContent='拖入 PDF 或图片';
+      $('p',zone).textContent='PDF 自动转为逐页预览 · PPT 请先另存为 PDF';
+      $('[data-action="choose-documents"]',zone).textContent='选择 PDF';
+      $('#document-files').accept='.pdf,application/pdf';
+      $('.import-note').textContent='在线版支持 PDF 和图片；直接导入 PPT / PPTX 请使用本机版，再导入生成的图片。';
+    }
   }
 }
 const imageFile=f=>/\.(jpe?g|png|webp|gif|bmp)$/i.test(f.name);
@@ -284,6 +341,12 @@ async function submitImport(e) {
   const documents=selectedFiles.filter(documentFile),pictures=selectedFiles.filter(imageFile);
   if(!selectedFiles.length){error.textContent='请先选择 PPT、PDF 或图片。';return;}
   if(documents.length&&pictures.length){error.textContent='请分开导入文档和图片，避免作品分组混淆。';return;}
+  if(window.Cloud&&!Cloud.aiAvailable&&documents.some(f=>/\.pptx?$/i.test(f.name))){error.textContent='当前未配置 AI 网关，请将 PPT / PPTX 另存为 PDF 后导入。';return;}
+  if(window.Cloud&&Cloud.aiAvailable&&documents.some(f=>/\.pptx?$/i.test(f.name))){
+    if(target){error.textContent='追加 PPT / PPTX 请先另存为 PDF 后再追加。';return;}
+    if(documents.length!==1){error.textContent='多份或混合 PPT / PPTX 不能直接导入素材库；AI 工作台会把同一批合并为一套。想各自成套请逐份导入，或先另存为 PDF。';return;}
+  }
+  if(window.Cloud&&Cloud.aiAvailable&&documents.some(f=>/\.pptx?$/i.test(f.name)&&f.size>25*1024*1024)){error.textContent='单份 PPT / PPTX 需小于 25 MB。';return;}
   if(pictures.some(f=>f.size>25*1024*1024)){error.textContent='单张图片需小于 25 MB。';return;}
   if(pictures.length>600||documents.length>10||selectedFiles.reduce((n,f)=>n+f.size,0)>100*1024*1024){error.textContent='每批最多 10 份文档或 600 张图片，总大小不超过 100 MB。';return;}
   importBusy=true; button.disabled=true;button.textContent='正在读取文件…';
@@ -380,7 +443,7 @@ async function nextPending() {
 document.addEventListener('click', e => {
   const button=e.target.closest('button, a[data-action]');if(!button||button.disabled)return;
   if(button.dataset.open){if(modal.open)modal.close();openDeck(button.dataset.open,Number(button.dataset.slide||0));return;}
-  if(button.dataset.view){view=button.dataset.view;activeId=null;query='';styleFilter='';history.pushState(null,'',location.pathname);render();window.scrollTo(0,0);return;}
+  if(button.dataset.view){view=button.dataset.view;activeId=null;query='';styleFilter='';classificationFilter='';history.pushState(null,'',location.pathname);render();window.scrollTo(0,0);return;}
   if(button.dataset.favorite){
     const r=mutableReview(button.dataset.favorite);r.favorite=!r.favorite;queueSave();
     if(activeId)renderDetail();else updateGrid();$('.sidebar').outerHTML=sidebar();if(window.Cloud)decorateCloud();return;
@@ -419,7 +482,7 @@ document.addEventListener('click', e => {
     case 'export-json':exportBackup();break;
     case 'choose-backup':$('#backup-file').click();break;
     case 'confirm-restore':restoreBackup();break;
-    case 'reset-filter':view='all';query='';styleFilter='';render();break;
+    case 'reset-filter':view='all';query='';styleFilter='';classificationFilter='';render();break;
   }
 });
 document.addEventListener('input', e => {
@@ -429,6 +492,7 @@ document.addEventListener('input', e => {
 document.addEventListener('change', e => {
   if(e.target.id==='sort'){sort=e.target.value;updateGrid();}
   if(e.target.id==='style-filter'){styleFilter=e.target.value;updateGrid();}
+  if(e.target.id==='classification-filter'){classificationFilter=e.target.value;updateGrid();}
   if(e.target.dataset.scoreInput){
     const value=e.target.value===''?null:Number(e.target.value);
     if(value!==null&&(!Number.isFinite(value)||value<0||value>state.maxScore)){toast('请输入 0 至 '+state.maxScore+' 之间的分数',true);e.target.value=currentEntry().scores[e.target.dataset.scoreInput]??'';return;}

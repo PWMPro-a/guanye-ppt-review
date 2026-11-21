@@ -1,18 +1,121 @@
 """End-to-end document imports against an isolated local library."""
 import base64
 import json
+import sys
 import tempfile
 import threading
 import time
+import types
+import unittest
 from pathlib import Path
 from http.server import ThreadingHTTPServer
+from unittest import mock
 from playwright.sync_api import sync_playwright, expect
 import fitz
+import document_import
 import server
 
 ROOT = Path(__file__).resolve().parent
 PDF = ROOT.parent / 'slideai-studio-integration/export-verification/presentation.pdf'
 PPTX = ROOT.parent / 'douyan_templates/output/个人成长_去水印试验_单页.pptx'
+
+
+class FakeSlides:
+    Count = 1
+
+
+class FakePresentation:
+    def __init__(self, save_error=None):
+        self.Slides = FakeSlides()
+        self.save_error = save_error
+        self.saved = []
+        self.close_calls = 0
+
+    def SaveAs(self, path, format):
+        self.saved.append((path, format))
+        if self.save_error:
+            raise self.save_error
+
+    def Close(self):
+        self.close_calls += 1
+
+
+class FakePresentations:
+    def __init__(self, app, presentation):
+        self.app = app
+        self.presentation = presentation
+        self.open_calls = []
+        self.settings_at_open = None
+
+    def Open(self, *args):
+        self.open_calls.append(args)
+        self.settings_at_open = (self.app.AutomationSecurity, self.app.DisplayAlerts)
+        return self.presentation
+
+
+class FakePowerPoint:
+    def __init__(self, presentation, automation_security=2, display_alerts=-1):
+        self.AutomationSecurity = automation_security
+        self.DisplayAlerts = display_alerts
+        self.Presentations = FakePresentations(self, presentation)
+        self.quit_calls = 0
+
+    def Quit(self):
+        self.quit_calls += 1
+
+
+def fake_com_modules(app):
+    pythoncom = types.ModuleType('pythoncom')
+    pythoncom.CoInitialize = mock.Mock()
+    pythoncom.CoUninitialize = mock.Mock()
+    client = types.ModuleType('win32com.client')
+    client.DispatchEx = mock.Mock(return_value=app)
+    package = types.ModuleType('win32com')
+    package.client = client
+    return {"pythoncom": pythoncom, "win32com": package, "win32com.client": client}, pythoncom, client
+
+
+class PowerPointComLifetimeTests(unittest.TestCase):
+    def paths(self, folder):
+        source = Path(folder) / 'source.ppt'
+        source.write_bytes(bytes.fromhex('D0CF11E0A1B11AE1'))
+        return source, Path(folder) / 'converted.pdf'
+
+    def test_success_closes_only_this_presentation_and_restores_settings(self):
+        with tempfile.TemporaryDirectory(prefix='powerpoint-com-test-') as folder:
+            source, output = self.paths(folder)
+            presentation = FakePresentation()
+            app = FakePowerPoint(presentation)
+            modules, pythoncom, client = fake_com_modules(app)
+            with mock.patch.dict(sys.modules, modules):
+                document_import.powerpoint_pdf(source, output)
+
+            self.assertEqual(client.DispatchEx.call_args, mock.call('PowerPoint.Application'))
+            self.assertEqual(app.Presentations.settings_at_open, (3, 1))
+            self.assertEqual(app.Presentations.open_calls, [(str(source.resolve()), -1, 0, 0)])
+            self.assertEqual(presentation.saved, [(str(output.resolve()), 32)])
+            self.assertEqual(presentation.close_calls, 1)
+            self.assertEqual(app.quit_calls, 0)
+            self.assertEqual((app.AutomationSecurity, app.DisplayAlerts), (2, -1))
+            pythoncom.CoInitialize.assert_called_once_with()
+            pythoncom.CoUninitialize.assert_called_once_with()
+
+    def test_error_closes_presentation_restores_settings_and_uses_fallback(self):
+        with tempfile.TemporaryDirectory(prefix='powerpoint-com-test-') as folder:
+            source, output = self.paths(folder)
+            presentation = FakePresentation(save_error=RuntimeError('mock save failed'))
+            app = FakePowerPoint(presentation, automation_security=1, display_alerts=0)
+            modules, pythoncom, _ = fake_com_modules(app)
+            with mock.patch.dict(sys.modules, modules), \
+                    mock.patch.object(document_import.shutil, 'which', return_value=None), \
+                    mock.patch.object(Path, 'is_file', return_value=False):
+                with self.assertRaisesRegex(ValueError, 'PPT 转换失败'):
+                    document_import.powerpoint_pdf(source, output)
+
+            self.assertEqual(presentation.close_calls, 1)
+            self.assertEqual(app.quit_calls, 0)
+            self.assertEqual((app.AutomationSecurity, app.DisplayAlerts), (1, 0))
+            pythoncom.CoUninitialize.assert_called_once_with()
 
 
 def legacy_copy(source, output):

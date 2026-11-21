@@ -25,5 +25,23 @@ const vm=require('node:vm'),fs=require('node:fs'),assert=require('node:assert/st
  records.at(-1).data.scores.layout=3;await cloud.refreshTeam();rows=context.teamRows();assert.equal(rows[0].mean,3.5);assert.equal(rows[0].records.length,2);
  records.at(-1).data={mode:'page',scores:{},pages:{img:{scores:{visual:2,layout:3}}}};await cloud.refreshTeam();rows=context.teamRows();assert.equal(rows[0].mean,3.5);assert.equal(rows[0].records.length,2);
  delete records.at(-1).data.pages.img.scores.layout;await cloud.refreshTeam();assert.equal(context.teamRows()[0].records.length,1);
- console.log('PASS: cloud transport, >1000 team records, signed private images, isolated save, ordinary member image import, complete-only team averages');
+ const pptBase64=Buffer.from('D0CF11E0A1B11AE1','hex').toString('base64');
+ const uploadsBefore=uploads.length;
+ await assert.rejects(cloud.request('/api/import-documents',{body:JSON.stringify({name:'single',files:[{name:'single.pptx',data:pptBase64}]})}),/另存为 PDF/);
+ assert.equal(uploads.length,uploadsBefore);
+
+ const gatewayRequests=[],gatewayUploads=[];
+ const importedDeck={id:'ai-import-1',title:'单份导入',images:[{id:'p1',path:workspace+'/ai-import-1/p1.png'}]};
+ const gatewayClient={auth:{getSession:async()=>({data:{session:{user:{id:'alice'},access_token:'token'}}})},rpc:async name=>{if(name==='get_review_library')return {data:{decks:[{data:importedDeck}],entries:[]}};if(name==='get_review_state')return {data:{revision:0,configRevision:0,maxScore:5,dimensions:[],reviews:{}}};if(name==='review_score_summary')return {data:{}};throw new Error('unexpected rpc '+name);},storage:{from:()=>({upload:async(path,bytes)=>{gatewayUploads.push({path,size:bytes.length});return {data:{path}};},createSignedUrls:async()=>({data:[]})})},from(){throw new Error('unexpected table read');}};
+ const gatewayContext={window:{CLOUD_CONFIG:{url:'https://example.supabase.co',anonKey:'test',workspaceId:workspace,aiGatewayUrl:'https://gateway.example/ai'},supabase:{createClient:()=>gatewayClient}},structuredClone,Map,Set,Uint8Array,URL,crypto:require('node:crypto').webcrypto,atob,location:{href:'https://site.example/review/'},document:{querySelector(){return null;}},fetch:async(url,options)=>{gatewayRequests.push({url:String(url),options});return {status:200,ok:true,text:async()=>JSON.stringify({ok:true,deckId:'ai-import-1',pageCount:'3'})};}};
+ vm.createContext(gatewayContext);vm.runInContext(fs.readFileSync('public/cloud.js','utf8'),gatewayContext);
+ const gatewayCloud=gatewayContext.window.Cloud;
+ const gatewayImport=await gatewayCloud.request('/api/import-documents',{body:JSON.stringify({target:null,name:'单份导入',files:[{name:'single.pptx',data:pptBase64}]})});
+ assert.deepEqual([...gatewayImport.created],['ai-import-1']);assert.equal(gatewayImport.added,3);assert.equal(gatewayImport.decks.length,1);assert.equal(gatewayRequests.length,1);assert.equal(gatewayRequests[0].url,'https://gateway.example/ai/api/ai/reviews/import');assert.deepEqual(JSON.parse(gatewayRequests[0].options.body),{name:'单份导入',files:[{name:'single.pptx',data:pptBase64}]});assert.equal(gatewayUploads.length,0);
+ await assert.rejects(gatewayCloud.request('/api/import-documents',{body:JSON.stringify({name:'two',files:[{name:'a.pptx',data:pptBase64},{name:'b.pptx',data:pptBase64}]})}),/多份或混合/);
+ await assert.rejects(gatewayCloud.request('/api/import-documents',{body:JSON.stringify({name:'mixed',files:[{name:'a.pptx',data:pptBase64},{name:'b.pdf',data:Buffer.from('%PDF-1.4').toString('base64')}]})}),/多份或混合/);
+ assert.equal(gatewayRequests.length,1);
+ await assert.rejects(gatewayCloud.request('/api/import-documents',{body:JSON.stringify({target:'existing',name:'append',files:[{name:'single.pptx',data:pptBase64}]})}),/追加/);
+ assert.equal(gatewayRequests.length,1);assert.equal(gatewayUploads.length,0);
+ console.log('PASS: cloud transport, >1000 team records, signed private images, isolated save, ordinary member image import, complete-only team averages, single PPT via existing AI import, multi/append rejected without fallback');
 })().catch(e=>{console.error(e);process.exit(1);});
