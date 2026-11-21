@@ -2,13 +2,14 @@
 window.Cloud = (() => {
   const config=window.CLOUD_CONFIG;
   if(!config)return null;
+  const aiGatewayUrl=String(config.aiGatewayUrl||'').trim().replace(/\/+$/,'');
   const client=config.url&&config.anonKey?window.supabase?.createClient(config.url,config.anonKey):null;
   let member=null, members=[], teamReviews=[];
-  const checked=async promise=>{const r=await promise;if(r.error)throw new Error(r.error.message);return r.data;};
+  const checked=async promise=>{const r=await promise;if(r.error){const error=new Error(r.error.message);error.code=r.error.code;error.status=r.error.status;error.details=r.error.details;error.hint=r.error.hint;throw error;}return r.data;};
   const rpc=(name,args={})=>checked(client.rpc(name,{w:config.workspaceId,...args}));
-  async function allRows(table,columns,order){
+  async function allRows(table,columns,order,filters={}){
     const rows=[];
-    for(let offset=0;;offset+=500){let query=client.from(table).select(columns).eq('workspace_id',config.workspaceId);for(const column of order.split(','))query=query.order(column);const batch=await checked(query.range(offset,offset+499));rows.push(...batch);if(batch.length<500)return rows;}
+    for(let offset=0;;offset+=500){let query=client.from(table).select(columns).eq('workspace_id',config.workspaceId);for(const [key,value] of Object.entries(filters))query=query.eq(key,value);for(const column of order.split(','))query=query.order(column);const batch=await checked(query.range(offset,offset+499));rows.push(...batch);if(batch.length<500)return rows;}
   }
   const safe=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   function gate(message='',mode='login'){
@@ -62,10 +63,24 @@ window.Cloud = (() => {
     [members,teamReviews]=await Promise.all([allRows('members','user_id,name,role','user_id'),allRows('reviews','user_id,deck_id,data','deck_id,user_id')]);
     return {members, reviews:teamReviews};
   }
-  let summary={},summarySeq=0;
-  async function refreshSummary(){const seq=++summarySeq;const rows=await rpc('review_score_summary');if(seq===summarySeq)summary=rows;return summary;}
+  let summary={},summarySeq=0,visibleDeckIds=new Set(),sourceKindAvailable=false;
+  async function refreshSummary(){const seq=++summarySeq;const rows=await rpc('review_score_summary');let next=rows;if(sourceKindAvailable&&rows&&typeof rows==='object'&&!Array.isArray(rows))next=Object.fromEntries(Object.entries(rows).filter(([id])=>visibleDeckIds.has(id)));if(seq===summarySeq)summary=next;return summary;}
+function isMissingRpc(error,name){const code=String(error?.code||''),text=[error?.message,error?.details,error?.hint,String(error||'')].filter(Boolean).join(' ');if(!text.includes(name))return false;if(code==='PGRST202'||code==='42883')return true;return /(could not find the function|does not exist|not found|schema cache)/i.test(text);}
+async function deckRows(){if(!aiGatewayUrl){sourceKindAvailable=false;return allRows('decks','data','id');}try{const rows=await allRows('decks','id,data,source_kind','id',{source_kind:'uploaded'});sourceKindAvailable=true;return rows;}catch(error){if(!/source_kind|column.*does not exist|schema cache|could not find/i.test(String(error?.message||error)))throw error;sourceKindAvailable=false;return allRows('decks','data','id');}}
   async function library(){
-    const [rows,state]=await Promise.all([allRows('decks','data','id'),rpc('get_review_state'),refreshSummary()]);
+    if(aiGatewayUrl){
+      try{
+        const value=await rpc('get_review_library');
+        if(value&&Array.isArray(value.decks)){
+          const decks=value.decks.map(row=>row?.data).filter(deck=>deck&&deck.id);
+          visibleDeckIds=new Set(decks.map(deck=>deck.id));sourceKindAvailable=true;
+          const [state]=await Promise.all([rpc('get_review_state'),refreshSummary()]);
+          return {decks,entries:Array.isArray(value.entries)?value.entries:[],state,source:'团队作品库',sourceAvailable:true};
+        }
+        throw new Error('get_review_library 返回格式无效');
+      }catch(error){if(!isMissingRpc(error,'get_review_library'))throw error;}
+    }
+    const rows=await deckRows();visibleDeckIds=new Set(rows.map(row=>row.id||row.data?.id));const [state]=await Promise.all([rpc('get_review_state'),refreshSummary()]);
     return {decks:rows.map(row=>row.data),state,source:'团队作品库',sourceAvailable:true};
   }
   async function request(url,options={}){
@@ -78,15 +93,27 @@ window.Cloud = (() => {
     throw new Error('云端暂不支持此操作');
   }
   async function importDocuments(value){
-    if(value.files.some(f=>!f.name.toLowerCase().endsWith('.pdf')))throw new Error('在线版请将 PPT 另存为 PDF 后导入；本机版支持直接导入 PPT / PPTX。');
+    const files=Array.isArray(value?.files)?value.files:[];
+    if(!files.length)throw new Error('请至少选择一份文档');
+    const presentations=files.filter(f=>/\.pptx?$/i.test(String(f?.name||'')));
+    if(presentations.length){
+      if(!aiGatewayUrl)throw new Error('当前未配置 AI 网关。请将 PPT / PPTX 另存为 PDF 后导入。');
+      if(value.target)throw new Error('在线追加 PPT / PPTX 请先另存为 PDF，再作为 PDF 追加。');
+      if(files.length!==1)throw new Error('多份或混合文档暂不能直接导入素材库；AI 工作台会把同一批合并为一套。想各自成套请逐份导入，或将 PPT / PPTX 另存为 PDF 后导入。');
+      const file=files[0];
+      const result=await aiRequest('/api/ai/reviews/import',{method:'POST',body:{name:String(value.name||'').trim(),files:[{name:file.name,data:file.data}]}});
+      if(!result?.deckId)throw new Error('PPT 导入未返回作品信息');
+      return {decks:(await library()).decks,created:[result.deckId],added:Number(result.pageCount)||0,skipped:0};
+    }
+    if(files.some(f=>!String(f?.name||'').toLowerCase().endsWith('.pdf')))throw new Error('在线版请将 PPT 另存为 PDF 后导入；本机版支持直接导入 PPT / PPTX。');
     const pdfjs=await import('./vendor/pdf.mjs');
     pdfjs.GlobalWorkerOptions.workerSrc=new URL('./vendor/pdf.worker.mjs',location.href).href;
     const images=[];
-    for(const file of value.files){
+    for(const file of files){
       const pdf=await pdfjs.getDocument({data:Uint8Array.from(atob(file.data),c=>c.charCodeAt(0)),isEvalSupported:false}).promise;
       try{
         if(pdf.numPages>600)throw new Error('每份文档最多 600 页');
-        const group=value.files.length===1&&value.name?value.name:file.name.replace(/\.[^.]+$/,'');
+        const group=files.length===1&&value.name?value.name:file.name.replace(/\.[^.]+$/,'');
         for(let p=1;p<=pdf.numPages;p++){
           const status=document.querySelector('#selected-files');if(status)status.textContent=file.name+' · 正在转换 '+p+' / '+pdf.numPages+' 页';
           const page=await pdf.getPage(p),base=page.getViewport({scale:1});
@@ -123,5 +150,43 @@ window.Cloud = (() => {
     return {decks:(await library()).decks,created,added,skipped:0};
   }
   async function changePassword(password){if(password.length<8)throw new Error('密码至少需要 8 个字符');await checked(client.auth.updateUser({password}));}
-  return {ready,request,imageUrl,refreshSummary,get summary(){return summary;},refreshTeam,changePassword,get member(){return member;},get team(){return {members,reviews:teamReviews};},async logout(){await client.auth.signOut();location.reload();}};
+  function aiEndpoint(path){
+    const raw=String(path??'').trim();
+    if(!raw||raw.startsWith('//')||raw.includes('\\')||raw.includes('#')||/^[a-z][a-z0-9+.-]*:/i.test(raw)||/%2e|%2f|%5c/i.test(raw))throw new Error('AI 接口路径无效');
+    if(raw.split('/').some(segment=>segment==='.'||segment==='..'))throw new Error('AI 接口路径无效');
+    const base=new URL(aiGatewayUrl.replace(/\/?$/,'/'),location.href);
+    const endpoint=new URL(raw.replace(/^\/+/,''),base);
+    if(endpoint.origin!==base.origin||endpoint.username||endpoint.password||!endpoint.pathname.startsWith(base.pathname))throw new Error('AI 接口路径无效');
+    return endpoint;
+  }
+  async function aiToken(refresh=false){
+    const data=refresh?await checked(client.auth.refreshSession()):await checked(client.auth.getSession());
+    const session=data?.session;
+    if(!session?.access_token)throw new Error('请先登录后再使用 AI 功能');
+    return session.access_token;
+  }
+  async function aiRequest(path,options={}){
+    if(!aiGatewayUrl)throw new Error('尚未配置 AI 网关');
+    if(!client)throw new Error('云端客户端未加载');
+    const method=String(options.method||'GET').toUpperCase();
+    if(!['GET','POST','PUT','PATCH','DELETE'].includes(method))throw new Error('AI 请求方法无效');
+    const body=options.body;
+    if(body!==undefined&&body!==null){const prototype=typeof body==='object'?Object.getPrototypeOf(body):undefined;if(typeof body!=='object'||Array.isArray(body)||(prototype!==null&&Object.getPrototypeOf(prototype)!==null))throw new Error('AI 请求 body 必须是 JSON 对象');}
+    const endpoint=aiEndpoint(path);
+    const send=async refresh=>{
+      const headers={Accept:'application/json'};
+      if(body!==undefined&&body!==null)headers['Content-Type']='application/json';
+      headers.Authorization='Bearer '+await aiToken(refresh);
+      return fetch(endpoint,{method,headers,body:body===undefined||body===null?undefined:JSON.stringify(body),credentials:'omit',cache:'no-store',signal:options.signal});
+    };
+    let response=await send(false);
+    if(response.status===401)response=await send(true);
+    const text=await response.text();
+    let payload=null;
+    if(text){try{payload=JSON.parse(text);}catch{throw new Error('AI 网关返回了无效 JSON');}}
+    if(!response.ok){const error=new Error(payload?.error||'AI 请求失败');error.status=response.status;error.code=payload?.code;throw error;}
+    return payload;
+  }
+  if(aiGatewayUrl){const aiCore=Object.freeze({request:aiRequest,get available(){return true;},get baseUrl(){return aiGatewayUrl;}});window.GuanyeAICore=aiCore;window.GuanyeAI=aiCore;window.GUANYE_AI_BASE=aiGatewayUrl;}
+  return {ready,request,imageUrl,refreshSummary,get summary(){return summary;},refreshTeam,changePassword,get member(){return member;},get team(){return {members,reviews:teamReviews};},get aiAvailable(){return Boolean(aiGatewayUrl&&window.GuanyeAI);},get aiGatewayUrl(){return aiGatewayUrl;},async logout(){await client.auth.signOut();location.reload();}};
 })();

@@ -1,0 +1,36 @@
+name: Gateway image smoke
+
+on:
+  pull_request:
+    paths:
+      - 'cloud/**'
+      - 'document_import.py'
+      - '.github/workflows/gateway-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gateway-smoke-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: Build and verify gateway image
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build local candidate image
+        run: docker build --file cloud/Dockerfile --tag guanye-ai-gateway:smoke .
+
+      - name: Run offline gateway and document smoke
+        run: python cloud/verify_gateway_image.py --image guanye-ai-gateway:smoke
+
+      - name: Verify review worker Docker stop drain
+        run: python -B cloud/verify_review_worker_drain.py --image guanye-ai-gateway:smoke

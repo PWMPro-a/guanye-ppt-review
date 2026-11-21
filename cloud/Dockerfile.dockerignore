@@ -1,0 +1,10 @@
+# Deny-by-default: the build context contains only the files copied by cloud/Dockerfile.
+**
+!cloud/
+cloud/*
+!cloud/ai_gateway.py
+!cloud/ai_reviews.py
+!cloud/ai_planning.py
+!cloud/ai_generation.py
+!cloud/gateway-requirements.txt
+!document_import.py
