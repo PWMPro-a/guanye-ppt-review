@@ -236,7 +236,7 @@ class GatewayConfig:
             raise GatewayConfigError("GUANYE_STORAGE_BUCKET 必须为 ppt-library，与 storage policy 保持一致")
 
     @classmethod
-    def from_env(cls) -> "GatewayConfig":
+    def from_env(cls, *, require_service_role: bool = True) -> "GatewayConfig":
         required = {
             "SUPABASE_URL": _env_text("GUANYE_SUPABASE_URL") or _env_text("SUPABASE_URL"),
             "SUPABASE_ANON_KEY": _env_text("GUANYE_SUPABASE_ANON_KEY")
@@ -245,7 +245,10 @@ class GatewayConfig:
             or _env_text("SUPABASE_SERVICE_ROLE_KEY"),
             "WORKSPACE_ID": _env_text("GUANYE_WORKSPACE_ID") or _env_text("WORKSPACE_ID"),
         }
-        missing = [name for name, value in required.items() if not value]
+        missing = [name for name, value in required.items()
+                   if not value and (require_service_role or name != "SUPABASE_SERVICE_ROLE_KEY")]
+        if not require_service_role:
+            required["SUPABASE_SERVICE_ROLE_KEY"] = ""
         if missing:
             raise GatewayConfigError("缺少环境变量: " + ", ".join(missing))
         workspace_id = str(uuid.UUID(required["WORKSPACE_ID"]))
@@ -942,9 +945,10 @@ class GatewayHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address: tuple[str, int], gateway: Gateway, router: Router):
+    def __init__(self, address: tuple[str, int], gateway: Gateway, router: Router, *, professional=None):
         self.gateway = gateway
         self.router = router
+        self.professional = professional
         super().__init__(address, GatewayRequestHandler)
 
 
@@ -989,7 +993,7 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
         }
         if origin and origin in self.server.gateway.config.allowed_origins:
             headers["Access-Control-Allow-Origin"] = origin
-            headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+            headers["Access-Control-Allow-Methods"] = ("GET, POST, OPTIONS" if self.server.professional is not None else "GET, POST, PUT, PATCH, DELETE, OPTIONS")
             headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
             headers["Access-Control-Max-Age"] = "600"
             headers["Vary"] = "Origin"
@@ -1008,6 +1012,8 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
         headers = self._common_headers(origin)
         if extra:
             headers.update(extra)
+        if self.server.professional is not None and self.close_connection:
+            headers["Connection"] = "close"
         headers["Content-Type"] = "application/json; charset=utf-8"
         headers["Content-Length"] = str(len(body))
         for key, value in headers.items():
@@ -1023,7 +1029,7 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
             raise AuthenticationError()
         return token.strip()
 
-    def _read_body(self) -> dict[str, Any]:
+    def _read_body(self, *, limit: int | None = None) -> dict[str, Any]:
         if (self.headers.get("Transfer-Encoding") or "").strip():
             raise ValueError("不支持分块请求体")
         raw_length = (self.headers.get("Content-Length") or "0").strip()
@@ -1033,7 +1039,7 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
             raise ValueError("Content-Length 无效") from exc
         if length < 0:
             raise ValueError("Content-Length 无效")
-        if length > self.server.gateway.config.max_body_bytes:
+        if length > min(self.server.gateway.config.max_body_bytes, limit or self.server.gateway.config.max_body_bytes):
             raise BodyTooLarge()
         if length == 0:
             return {}
@@ -1053,6 +1059,8 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
 
     def _dispatch(self, method: str) -> None:
         origin = self._origin()
+        if self.server.professional is not None:
+            self.close_connection = True
         try:
             self._check_origin(origin)
             if method == "OPTIONS":
@@ -1061,6 +1069,9 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
             path = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)
             if method == "GET" and path == "/healthz":
                 self._send(200, {"ok": True, "service": "guanye-ai-gateway"}, origin)
+                return
+            if self.server.professional is not None:
+                self._dispatch_professional(method, path, origin)
                 return
             principal = self.server.gateway.authenticate(self._bearer_token())
             handler = self.server.router.resolve(method, path)
@@ -1099,6 +1110,47 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             LOGGER.error("Unhandled gateway error (%s)", type(exc).__name__)
             self._send(500, {"error": "服务内部错误", "code": "internal_error"}, origin)
+
+    def _dispatch_professional(self, method: str, path: str, origin: str) -> None:
+        from cloud.professional_creation import ANALYZE, MAX_ANALYZE_BODY, MAX_EDIT_BODY, ROUTES
+        from cloud.professional_import import ImportErrorResponse
+
+        # Rejected uploads may still have unread bytes on the connection.
+        self.close_connection = True
+        if (method, path) not in ROUTES:
+            raise RouteNotFound()
+        if len(self.path) > 2048:
+            raise ValueError("请求地址过长")
+        if len(self.headers.get_all("Content-Length", [])) > 1:
+            raise ValueError("Content-Length 重复")
+        token = self._bearer_token()
+        pairs = urllib.parse.parse_qsl(urllib.parse.urlsplit(self.path).query,
+                                        keep_blank_values=True, strict_parsing=True, max_num_fields=5)
+        query = dict(pairs)
+        if len(query) != len(pairs) or method == "POST" and query:
+            raise ValueError("请求参数无效")
+        if method == "GET" and (self.headers.get("Transfer-Encoding") is not None
+                                or self.headers.get_all("Content-Length", []) not in ([], ["0"])):
+            raise ValueError("读取请求不能包含正文")
+        service = self.server.professional
+        try:
+            actor = service.authorize(token)
+            with service.slot(path):
+                if method == "POST":
+                    self.connection.settimeout(30)
+                    try:
+                        body = self._read_body(limit=MAX_ANALYZE_BODY if path == ANALYZE else MAX_EDIT_BODY)
+                    except TimeoutError:
+                        self.close_connection = True
+                        raise ImportErrorResponse(408, "读取请求超时") from None
+                else:
+                    body = {}
+                status, value = service.handle(method, path, actor, token, body, query)
+        except ImportErrorResponse as exc:
+            self.close_connection = True
+            self._send(exc.status, {"error": str(exc)[:300]}, origin)
+            return
+        self._send(status, value, origin)
 
 
 def build_router(modules: Sequence[Any] | None = None) -> Router:
@@ -1449,20 +1501,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--host", help="override GUANYE_HOST")
     parser.add_argument("--port", type=int, help="override GUANYE_PORT")
     parser.add_argument("--review-worker", action="store_true", help="process queued AI reviews without an HTTP listener")
+    parser.add_argument("--professional", action="store_true", help="serve only professional web creation routes")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     try:
-        config = GatewayConfig.from_env()
+        config = GatewayConfig.from_env(require_service_role=not args.professional)
         if args.host:
             config = GatewayConfig(**{**config.__dict__, "host": args.host})
         if args.port:
             config = GatewayConfig(**{**config.__dict__, "port": args.port})
         gateway = Gateway(config)
         if args.review_worker:
+            if args.professional:
+                parser.error("--professional does not use the legacy review worker")
             return _serve_review_worker_cli(gateway)
-        router = build_router()
-        server = GatewayHTTPServer((config.host, config.port), gateway, router)
+        professional = None
+        if args.professional:
+            from cloud.professional_creation import ProfessionalCreation
+            if not config.allowed_origins or not config.model_api_key:
+                raise GatewayConfigError("Professional gateway requires its allowed browser origin and model key")
+            professional = ProfessionalCreation({"url": config.supabase_url, "anonKey": config.supabase_anon_key,
+                                                 "workspaceId": config.workspace_id}, "", chat=gateway.chat_json, require_cutover=True)
+        server = GatewayHTTPServer((config.host, config.port), gateway,
+                                   Router() if professional else build_router(), professional=professional)
     except GatewayError as exc:
         LOGGER.error("Gateway startup failed: %s", exc.detail)
         return 2
@@ -1477,4 +1539,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # Imports inside professional adapters must share these exception classes.
+    sys.modules.setdefault("cloud.ai_gateway", sys.modules[__name__])
     raise SystemExit(main())

@@ -1,0 +1,56 @@
+name: guanye-professional
+
+x-runtime: &runtime
+  image: "${GUANYE_IMAGE:?Set GUANYE_IMAGE to the tested local image tag}"
+  pull_policy: never
+  user: "10001:10001"
+  init: true
+  restart: unless-stopped
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  pids_limit: 128
+  logging:
+    options:
+      max-size: "5m"
+      max-file: "3"
+
+x-worker: &worker
+  <<: *runtime
+  entrypoint: [python, -B, -m, cloud.ecs_worker]
+  stop_grace_period: 5m
+  volumes:
+    - type: bind
+      source: "${GUANYE_STATE_DIR:?Set an absolute private host state directory owned by UID 10001}"
+      target: /state
+
+services:
+  gateway:
+    <<: *runtime
+    command: [--professional]
+    env_file: ["${GUANYE_ENV_DIR:?Set the host-only configuration directory}/gateway.env"]
+    environment:
+      GUANYE_HOST: 0.0.0.0
+      GUANYE_PORT: "8787"
+      GUANYE_MODEL_MAX_CONCURRENCY: "1"
+    ports: ["127.0.0.1:${GUANYE_HTTP_PORT:-8787}:8787"]
+    mem_limit: 384m
+    healthcheck:
+      test: [CMD, python, -c, "from urllib.request import urlopen; assert urlopen('http://127.0.0.1:8787/healthz', timeout=3).status == 200"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+  intake:
+    <<: *worker
+    command: [intake]
+    env_file: ["${GUANYE_ENV_DIR}/worker.env", "${GUANYE_ENV_DIR}/intake.env"]
+    mem_limit: 640m
+  review:
+    <<: *worker
+    command: [review]
+    env_file: ["${GUANYE_ENV_DIR}/worker.env", "${GUANYE_ENV_DIR}/review.env"]
+    mem_limit: 256m
+  image:
+    <<: *worker
+    command: [image]
+    env_file: ["${GUANYE_ENV_DIR}/worker.env", "${GUANYE_ENV_DIR}/image.env"]
+    mem_limit: 320m

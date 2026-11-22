@@ -1,9 +1,8 @@
 'use strict';
 (() => {
   const config = window.CLOUD_CONFIG;
-  const professionalReviewOnly = config?.singleJudge === true && config?.localReview === true;
-  const localCreation = config?.singleJudge === true && config?.localCreation === true;
-  if (!config || (!config.aiGatewayUrl && !professionalReviewOnly && !localCreation)) return;
+  const professionalReviewOnly = config?.singleJudge === true && (config?.localReview === true || config?.webProfessional === true);
+  if (!config || (!config.aiGatewayUrl && !professionalReviewOnly && !config.localCreation)) return;
   if (window.GuanyeAICore) window.GuanyeAI = window.GuanyeAICore;
 
   const safe = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -16,7 +15,7 @@
   let decorating = false;
 
   function creationAvailable() {
-    return Boolean(localCreation && window.Cloud?.capabilities?.canUseAiWorkspace && window.Cloud?.localCreationAvailable);
+    return Boolean(window.Cloud?.capabilities?.canUseAiWorkspace && window.Cloud?.professionalCreationAvailable);
   }
 
   function ready() {

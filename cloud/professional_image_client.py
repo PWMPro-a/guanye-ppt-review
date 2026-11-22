@@ -293,6 +293,21 @@ class ProfessionalImageClient:
             return result
         raise AssertionError("unreachable")
 
+    def worker_job(self, job_id: str) -> dict:
+        if not _uuid(job_id):
+            raise WorkerError("生成任务编号无效", 400)
+        path = "/rest/v1/rpc/professional_worker_generation_job"
+        token = self._token()
+        for attempt in range(2):
+            reply = self._request("POST", path, token, command={"w": self.workspace_id, "job_id": job_id})
+            if reply.status == 401 and attempt == 0:
+                token = self._token(token)
+                continue
+            if reply.status != 200:
+                raise WorkerError("无法读取后台生图任务", reply.status)
+            return self._job_shape(_json(reply.body), job_id)
+        raise AssertionError("unreachable")
+
     def _expected_target(self, page: dict) -> tuple[str, str]:
         _lease_params(page)
         mime = page.get("contentType")

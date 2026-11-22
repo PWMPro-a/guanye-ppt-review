@@ -96,7 +96,7 @@ class ManageMigrationTests(unittest.TestCase):
 
     def test_base_only_database_has_explicit_upgrade_path(self):
         api=FakeApi(base_installed=True,history_table_exists=False,
-                    probes={'m02':False,'m03':False,'m04':False,'m05':False,'m06':False,'m07':False,'m08':False,'m09':False,'m10':False,'m11':False,'m12':False,'m13':False,'m14':False,'m15':False,'m16':False,'m17':False,'m18':False,'m19':False,'m20':False,'m21':False,'m22':False,'m23':False,'m24':False,'m25':False,'m26':False,'m27':False,'m28':False,'m29':False,'m30':False,'m31':False,'m32':False,'m33':False,'m34':False,'m35':False})
+                    probes={'m02':False,'m03':False,'m04':False,'m05':False,'m06':False,'m07':False,'m08':False,'m09':False,'m10':False,'m11':False,'m12':False,'m13':False,'m14':False,'m15':False,'m16':False,'m17':False,'m18':False,'m19':False,'m20':False,'m21':False,'m22':False,'m23':False,'m24':False,'m25':False,'m26':False,'m27':False,'m28':False,'m29':False,'m30':False,'m31':False,'m32':False,'m33':False,'m34':False,'m35':False,'m36':False})
         result=manage._migrate_database(api,TEST_REF,catalog=self.catalog,upgrade_unmanaged_base=True)
         self.assertTrue(result['initialized_unmanaged_base'])
         self.assertEqual(result['applied'],self.versions)
@@ -105,7 +105,7 @@ class ManageMigrationTests(unittest.TestCase):
 
     def test_base_only_upgrade_refuses_database_with_later_objects(self):
         api=FakeApi(base_installed=True,history_table_exists=False,
-                    probes={'m03':True,'m04':False,'m05':False,'m06':False,'m07':False,'m08':False,'m09':False,'m10':False,'m11':False,'m12':False,'m13':False,'m14':False,'m15':False,'m16':False,'m17':False,'m18':False,'m19':False,'m20':False,'m21':False,'m22':False,'m23':False,'m24':False,'m25':False,'m26':False,'m27':False,'m28':False,'m29':False,'m30':False,'m31':False,'m32':False,'m33':False,'m34':False,'m35':False})
+                    probes={'m03':True,'m04':False,'m05':False,'m06':False,'m07':False,'m08':False,'m09':False,'m10':False,'m11':False,'m12':False,'m13':False,'m14':False,'m15':False,'m16':False,'m17':False,'m18':False,'m19':False,'m20':False,'m21':False,'m22':False,'m23':False,'m24':False,'m25':False,'m26':False,'m27':False,'m28':False,'m29':False,'m30':False,'m31':False,'m32':False,'m33':False,'m34':False,'m35':False,'m36':False})
         with self.assertRaisesRegex(RuntimeError,'not base-only'):
             manage._migrate_database(api,TEST_REF,catalog=self.catalog,upgrade_unmanaged_base=True)
         self.assertEqual(api.history,{})
@@ -238,7 +238,7 @@ class ManageMigrationTests(unittest.TestCase):
         self.assertIn("not has_table_privilege('service_role',to_regclass('guanye_internal.uploaded_source_provenance'),'SELECT')",sql)
 
     def test_adoption_requires_single_judge_intake_probe(self):
-        api=FakeApi(base_installed=True,history_table_exists=False,probes={'m35':False})
+        api=FakeApi(base_installed=True,history_table_exists=False,probes={'m35':False,'m36':False})
         with self.assertRaisesRegex(RuntimeError,'20261122_35_single_judge_intake'):
             manage._migrate_database(api,TEST_REF,catalog=self.catalog,adopt_existing=True)
         self.assertEqual(api.history,{})
@@ -383,6 +383,7 @@ const {pgcrypto}=require(process.argv[3]);
   assert.equal(legacyProbes.m33,false,'review queue probe safe on an untouched library');
   assert.equal(legacyProbes.m34,false,'owner activation probe safe on an untouched library');
   assert.equal(legacyProbes.m35,false,'intake probe safe on an untouched library');
+  assert.equal(legacyProbes.m36,false,'professional web probe safe on an untouched library');
   for(let index=7;index<process.argv.length-2;index++) await db.exec(fs.readFileSync(process.argv[index],'utf8'));
   const currentProbes=(await db.query(probe)).rows[0];
   assert.equal(currentProbes.m28,true,'admission privileges and triggers detected after M28');
@@ -393,8 +394,10 @@ const {pgcrypto}=require(process.argv[3]);
   assert.equal(currentProbes.m33,true,'professional review queue detected after M33');
   assert.equal(currentProbes.m34,true,'professional owner activation detected after M34');
   assert.equal(currentProbes.m35,true,'direct intake queue, owner read policy and claim index detected after M35');
+  assert.equal(currentProbes.m36,true,'role activation and rollback are restricted to the service role');
   const failurePath=process.argv[process.argv.length-1];
   const expected=['20261121_01_ai_review_foundation','20261121_02_ai_reviews','20261121_03_ai_planning','20261121_04_ai_generation','20261121_05_review_queue','20261121_06_generation_history','20261121_07_review_calibration','20261121_08_review_comparison','20261121_09_review_backfill','20261121_10_review_queue_listing','20261121_11_planning_history','20261121_12_library_classification','20261121_13_formal_correction','20261121_14_library_formal_scores','20261121_15_planning_original_references','20261121_16_uploaded_baseline','20261121_17_review_workspace_batch','20261121_18_review_backfill_classification','20261121_19_uploaded_source_provenance','20261121_20_uploaded_source_groups','20261121_21_uploaded_comparison_source_dedup','20261122_22_single_judge_foundation','20261122_23_single_judge_original_archive','20261122_24_single_judge_submission','20261122_25_image_workers_default','20261122_26_single_judge_score_revisions','20261122_27_single_judge_review_workspace','20261122_28_single_judge_admission','20261122_29_single_judge_generation_references','20261122_30_single_judge_creation','20261122_31_single_judge_image_runtime','20261122_32_single_judge_legacy_backfill','20261122_33_single_judge_review_queue','20261122_34_single_judge_owner_activation','20261122_35_single_judge_intake'];
+  expected.push('20261123_36_professional_web');
   const history=(await db.query('select version from guanye_internal.schema_migrations order by version')).rows.map(row=>row.version);
   assert.deepEqual(history,expected);
   const objects=(await db.query(`select

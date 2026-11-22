@@ -50,6 +50,13 @@ def build(environ=None, root=None):
     config = dict(url=supabase_url, anonKey=key, workspaceId=workspace_id)
     if values['AI_GATEWAY_URL']:
         config['aiGatewayUrl'] = _public_https_url(values['AI_GATEWAY_URL'], 'AI_GATEWAY_URL')
+    professional = source.get('GUANYE_WEB_PROFESSIONAL', '').strip()
+    if professional not in ('', '0', '1'):
+        raise SystemExit('GUANYE_WEB_PROFESSIONAL must be 0 or 1')
+    if professional == '1':
+        if 'aiGatewayUrl' not in config or not config['aiGatewayUrl'].startswith('https://'):
+            raise SystemExit('Professional web requires an HTTPS AI_GATEWAY_URL')
+        config.update(singleJudge=True, webProfessional=True)
 
     destination = project_root / 'dist'
     if destination.exists():

@@ -31,6 +31,7 @@ RUN python -m pip install \
     -r cloud/gateway-requirements.txt
 
 COPY --chown=10001:10001 cloud/ai_gateway.py cloud/ai_reviews.py cloud/ai_planning.py cloud/ai_generation.py ./cloud/
+COPY --chown=10001:10001 cloud/ecs_image_provider.py cloud/ecs_worker.py cloud/local_professional.py cloud/professional_creation.py cloud/professional_image_client.py cloud/professional_import.py cloud/professional_intake.py cloud/professional_review_worker.py cloud/windows_image_worker.py ./cloud/
 COPY --chown=10001:10001 document_import.py ./document_import.py
 
 USER 10001:10001

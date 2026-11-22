@@ -59,6 +59,7 @@ MIGRATION_SPECS=(
     ('20261122_33_single_judge_review_queue','20261122_33_single_judge_review_queue.sql'),
     ('20261122_34_single_judge_owner_activation','20261122_34_single_judge_owner_activation.sql'),
     ('20261122_35_single_judge_intake','20261122_35_single_judge_intake.sql'),
+    ('20261123_36_professional_web','20261123_36_professional_web.sql'),
 )
 HISTORY_DDL=f"""create schema if not exists guanye_internal;
 revoke all on schema guanye_internal from public, anon, authenticated;
@@ -668,7 +669,14 @@ def _existing_schema_probes(api,ref,read_only=False):
       and position('is distinct from ''judge''' in p.prosrc)>0)
     and has_function_privilege('authenticated',to_regprocedure('public.single_judge_intake_fail(uuid,uuid,uuid,text)'),'EXECUTE')
     and not has_function_privilege('anon',to_regprocedure('public.single_judge_intake_fail(uuid,uuid,uuid,text)'),'EXECUTE')
-    and not has_function_privilege('service_role',to_regprocedure('public.single_judge_intake_fail(uuid,uuid,uuid,text)'),'EXECUTE')) as m35;""",read_only=read_only)
+    and not has_function_privilege('service_role',to_regprocedure('public.single_judge_intake_fail(uuid,uuid,uuid,text)'),'EXECUTE')) as m35,
+ (exists(select 1 from pg_attribute where attrelid=to_regclass('public.workspaces')
+          and attname='professional_web' and not attisdropped)
+  and to_regclass('guanye_internal.professional_web_cutovers') is not null
+  and has_function_privilege('service_role',to_regprocedure('public.professional_web_activate(uuid,uuid,uuid)'),'EXECUTE')
+  and not has_function_privilege('authenticated',to_regprocedure('public.professional_web_activate(uuid,uuid,uuid)'),'EXECUTE')
+  and not has_function_privilege('authenticated',to_regprocedure('public.professional_web_rollback(uuid)'),'EXECUTE')
+  and has_function_privilege('authenticated',to_regprocedure('public.professional_worker_generation_job(uuid,uuid)'),'EXECUTE')) as m36;""",read_only=read_only)
 
 
 def _all_base_tables(state):

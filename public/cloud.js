@@ -8,6 +8,8 @@ window.Cloud = (() => {
   const localImport=config.localImport===true;
   const localReview=singleJudgeEnabled&&config.localReview===true;
   const localCreation=singleJudgeEnabled&&config.localCreation===true;
+  const webProfessional=singleJudgeEnabled&&config.webProfessional===true&&aiGatewayUrl.startsWith('https://');
+  const professionalReview=localReview||webProfessional;
   const LOCAL_CREATION_MAX_JSON_CHARS=36*1024*1024;
   const LOCAL_UUID=/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
   const WEB_INTAKE_TABLE='single_judge_intake';
@@ -25,7 +27,10 @@ window.Cloud = (() => {
     submitter:Object.freeze({role:'submitter',canReadComparison:false,canBrowse:false,canBrowseLibrary:false,canReadStatus:false,canScore:false,canSubmitMaterials:true,canUseOfficialReview:false,canUseAiWorkspace:false,canWriteLegacy:false,canLegacyWrite:false,canImport:false,canImportLibrary:false,canDelete:false,canDeleteLibrary:false,canViewTeam:false,canViewTeamScores:false,canInvite:false,canManageAdminData:false})
   });
   let member=null, members=[], teamReviews=[], singleJudgeAccess=null;
-  const singleJudgeCapabilities=()=>singleJudgeEnabled&&singleJudgeAccess?SINGLE_JUDGE_CAPABILITIES[singleJudgeAccess.role]||null:null;
+  const singleJudgeCapabilities=()=>{
+    const capability=singleJudgeEnabled&&singleJudgeAccess?SINGLE_JUDGE_CAPABILITIES[singleJudgeAccess.role]||null:null;
+    return webProfessional&&capability?.role==='judge' ? {...capability,canDelete:false,canDeleteLibrary:false,canManageAdminData:false}:capability;
+  };
   function assertSingleJudgeAccess(){
     if(singleJudgeEnabled&&!singleJudgeAccess)throw new Error('单评委权限尚未通过校验');
   }
@@ -54,7 +59,7 @@ window.Cloud = (() => {
   }
   async function loadSingleJudgeAccess(){
     const value=await rpc('single_judge_access');
-    if(!value||value.mode!=='single-judge'||!['judge','admin','submitter'].includes(value.role))return null;
+    if(!value||value.mode!=='single-judge'||!['judge','admin','submitter'].includes(value.role)||(webProfessional&&value.professionalWeb!==true))return null;
     return Object.freeze({mode:'single-judge',role:value.role});
   }
   async function authenticateSingleJudge(){
@@ -158,14 +163,19 @@ window.Cloud = (() => {
   }
   let summary={},summarySeq=0,visibleDeckIds=new Set(),sourceKindAvailable=false;
   async function refreshSummary(){
-    if(singleJudgeEnabled){assertSingleJudgeAccess();if(!singleJudgeCapabilities()?.canBrowseLibrary)throw new Error('当前角色无权读取作品库状态');summary={};return summary;}
+    if(singleJudgeEnabled){
+      assertSingleJudgeAccess();if(!singleJudgeCapabilities()?.canBrowseLibrary)throw new Error('当前角色无权读取作品库状态');
+      if(!webProfessional){summary={};return summary;}
+      const seq=++summarySeq,rows=await rpc('professional_score_summary');
+      if(seq===summarySeq)summary=rows;return summary;
+    }
     const seq=++summarySeq;const rows=await rpc('review_score_summary');let next=rows;if(sourceKindAvailable&&rows&&typeof rows==='object'&&!Array.isArray(rows))next=Object.fromEntries(Object.entries(rows).filter(([id])=>visibleDeckIds.has(id)));if(seq===summarySeq)summary=next;return summary;
   }
 function isMissingRpc(error,name){const code=String(error?.code||''),text=[error?.message,error?.details,error?.hint,String(error||'')].filter(Boolean).join(' ');if(!text.includes(name))return false;if(code==='PGRST202'||code==='42883')return true;return /(could not find the function|does not exist|not found|schema cache)/i.test(text);}
 async function deckRows(){if(!aiGatewayUrl){sourceKindAvailable=false;return allRows('decks','data','id');}try{const rows=await allRows('decks','id,data,source_kind','id',{source_kind:'uploaded'});sourceKindAvailable=true;return rows;}catch(error){if(!/source_kind|column.*does not exist|schema cache|could not find/i.test(String(error?.message||error)))throw error;sourceKindAvailable=false;return allRows('decks','data','id');}}
   async function library(){
     if(singleJudgeEnabled){assertSingleJudgeAccess();if(!singleJudgeCapabilities()?.canBrowseLibrary)throw new Error('当前角色无权读取作品库');}
-    if(aiGatewayUrl||localReview){
+    if(aiGatewayUrl||professionalReview){
       try{
         const value=await rpc('get_review_library');
         if(value&&Array.isArray(value.decks)){
@@ -175,7 +185,7 @@ async function deckRows(){if(!aiGatewayUrl){sourceKindAvailable=false;return all
           return {decks,entries:Array.isArray(value.entries)?value.entries:[],state,source:singleJudgeEnabled?'单评委作品库':'团队作品库',sourceAvailable:true};
         }
         throw new Error('get_review_library 返回格式无效');
-      }catch(error){if(localReview||!isMissingRpc(error,'get_review_library'))throw error;}
+      }catch(error){if(professionalReview||!isMissingRpc(error,'get_review_library'))throw error;}
     }
     const rows=await deckRows();visibleDeckIds=new Set(rows.map(row=>row.id||row.data?.id));const [state]=await Promise.all([rpc('get_review_state'),refreshSummary()]);
     return {decks:rows.map(row=>row.data),state,source:singleJudgeEnabled?'单评委作品库':'团队作品库',sourceAvailable:true};
@@ -580,7 +590,7 @@ async function deckRows(){if(!aiGatewayUrl){sourceKindAvailable=false;return all
   }
   async function aiRequest(path,options={}){
     if(localCreation&&localCreationPath(path))return localCreationRequest(path,options);
-    if(localReview)return professionalReviewRequest(path,options);
+    if(localReview||(webProfessional&&!localCreationPath(path)))return professionalReviewRequest(path,options);
     if(!aiGatewayUrl)throw new Error('尚未配置 AI 网关');
     if(!client)throw new Error('云端客户端未加载');
     if(singleJudgeEnabled){
@@ -596,7 +606,7 @@ async function deckRows(){if(!aiGatewayUrl){sourceKindAvailable=false;return all
       const headers={Accept:'application/json'};
       if(body!==undefined&&body!==null)headers['Content-Type']='application/json';
       headers.Authorization='Bearer '+await aiToken(refresh);
-      return fetch(endpoint,{method,headers,body:body===undefined||body===null?undefined:JSON.stringify(body),credentials:'omit',cache:'no-store',signal:options.signal});
+      return fetch(endpoint,{method,headers,body:body===undefined||body===null?undefined:JSON.stringify(body),credentials:'omit',cache:'no-store',redirect:'error',signal:options.signal});
     };
     let response=await send(false);
     if(response.status===401)response=await send(true);
@@ -607,5 +617,11 @@ async function deckRows(){if(!aiGatewayUrl){sourceKindAvailable=false;return all
     return payload;
   }
   if(aiGatewayUrl||localReview||localCreation){const aiCore=Object.freeze({request:aiRequest,get available(){return true;},get baseUrl(){return aiGatewayUrl||(localCreation?location.origin:'');}});window.GuanyeAICore=aiCore;window.GuanyeAI=aiCore;window.GUANYE_AI_BASE=aiGatewayUrl;}
-  return {ready,request,imageUrl,fileUrl,original,refreshSummary,refreshTeam,changePassword,submitWebIntake,listMyIntakes,get summary(){return summary;},get member(){return member;},get team(){return singleJudgeEnabled?{members:[],reviews:[]}:{members,reviews:teamReviews};},get mode(){return singleJudgeEnabled?(singleJudgeAccess?.mode||null):'team';},get role(){return singleJudgeEnabled?(singleJudgeAccess?.role||null):(member?.role||null);},get access(){return singleJudgeAccess?{mode:singleJudgeAccess.mode,role:singleJudgeAccess.role}:null;},get capabilities(){return singleJudgeCapabilities();},get localImport(){return localImport;},get localCreation(){return localCreation;},get webIntakeAvailable(){return Boolean(singleJudgeEnabled&&singleJudgeAccess&&singleJudgeCapabilities()?.canSubmitMaterials&&client&&config.workspaceId);},get professionalImportAvailable(){return Boolean(singleJudgeEnabled&&singleJudgeCapabilities()?.canSubmitMaterials&&localImport);},get professionalReviewAvailable(){return Boolean(localReview&&singleJudgeCapabilities()?.canUseOfficialReview);},get professionalComparisonAvailable(){return Boolean(localReview&&singleJudgeCapabilities()?.canReadComparison);},get localCreationAvailable(){return Boolean(localCreation&&singleJudgeCapabilities()?.canUseAiWorkspace);},get aiAvailable(){return singleJudgeEnabled?Boolean(['judge','admin'].includes(singleJudgeAccess?.role)&&singleJudgeCapabilities()?.canUseAiWorkspace&&(aiGatewayUrl||localCreation)&&window.GuanyeAI):Boolean(aiGatewayUrl&&window.GuanyeAI);},get aiGatewayUrl(){return aiGatewayUrl;},async logout(){singleJudgeAccess=null;member=null;await client.auth.signOut();location.reload();}};
+  const professionalAdminAvailable=()=>webProfessional&&singleJudgeAccess?.role==='admin';
+  const adminCalls=Object.freeze({directory:'professional_admin_directory',export:'professional_admin_export',settings:'professional_admin_settings',archive:'professional_admin_archive',addMember:'professional_admin_add_member',member:'professional_admin_member'});
+  function professionalAdmin(action,args={}){
+    if(!professionalAdminAvailable()||!Object.hasOwn(adminCalls,action))throw new Error('仅当前工作区管理员可以操作');
+    return rpc(adminCalls[action],args);
+  }
+  return {ready,request,professionalAdmin,get webProfessional(){return webProfessional;},get professionalAdminAvailable(){return professionalAdminAvailable();},imageUrl,fileUrl,original,refreshSummary,refreshTeam,changePassword,submitWebIntake,listMyIntakes,get summary(){return summary;},get member(){return member;},get team(){return singleJudgeEnabled?{members:[],reviews:[]}:{members,reviews:teamReviews};},get mode(){return singleJudgeEnabled?(singleJudgeAccess?.mode||null):'team';},get role(){return singleJudgeEnabled?(singleJudgeAccess?.role||null):(member?.role||null);},get access(){return singleJudgeAccess?{mode:singleJudgeAccess.mode,role:singleJudgeAccess.role}:null;},get capabilities(){return singleJudgeCapabilities();},get localImport(){return localImport;},get localCreation(){return localCreation;},get webIntakeAvailable(){return Boolean(singleJudgeEnabled&&singleJudgeAccess&&singleJudgeCapabilities()?.canSubmitMaterials&&client&&config.workspaceId);},get professionalImportAvailable(){return Boolean(singleJudgeEnabled&&singleJudgeCapabilities()?.canSubmitMaterials&&localImport);},get professionalReviewAvailable(){return Boolean(professionalReview&&singleJudgeCapabilities()?.canUseOfficialReview);},get professionalComparisonAvailable(){return Boolean(professionalReview&&singleJudgeCapabilities()?.canReadComparison);},get professionalCreationAvailable(){return Boolean((localCreation||webProfessional)&&singleJudgeCapabilities()?.canUseAiWorkspace);},get localCreationAvailable(){return Boolean(localCreation&&singleJudgeCapabilities()?.canUseAiWorkspace);},get aiAvailable(){return singleJudgeEnabled?Boolean(['judge','admin'].includes(singleJudgeAccess?.role)&&singleJudgeCapabilities()?.canUseAiWorkspace&&(aiGatewayUrl||localCreation)&&window.GuanyeAI):Boolean(aiGatewayUrl&&window.GuanyeAI);},get aiGatewayUrl(){return aiGatewayUrl;},async logout(){singleJudgeAccess=null;member=null;await client.auth.signOut();location.reload();}};
 })();
