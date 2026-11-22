@@ -1,0 +1,849 @@
+'use strict';
+
+window.GuanyeAI = (() => {
+  const config = window.CLOUD_CONFIG || {};
+  let clientPromise = null;
+
+  function client() {
+    if (!clientPromise) {
+      if (!config.url || !config.anonKey || !window.supabase?.createClient) {
+        return Promise.reject(new Error('云端登录尚未配置'));
+      }
+      clientPromise = Promise.resolve(window.supabase.createClient(config.url, config.anonKey));
+    }
+    return clientPromise;
+  }
+
+  async function authHeaders() {
+    const headers = { 'Accept': 'application/json' };
+    if (config.workspaceId) headers['X-Workspace-Id'] = config.workspaceId;
+    try {
+      const supabase = await client();
+      const result = await supabase.auth.getSession();
+      if (result.error) throw result.error;
+      const token = result.data?.session?.access_token;
+      if (token) headers['Authorization'] = 'Bearer ' + token;
+    } catch (error) {
+      if (!config.url) throw error;
+    }
+    return headers;
+  }
+
+  async function request(path, options = {}) {
+    if (typeof path !== 'string' || !path.startsWith('/api/')) throw new Error('接口路径无效');
+    const method = String(options.method || 'GET').toUpperCase();
+    const headers = { ...(await authHeaders()), ...(options.headers || {}) };
+    let body = options.body;
+    if (body !== undefined && body !== null && !(body instanceof FormData) && typeof body !== 'string') {
+      headers['Content-Type'] = 'application/json; charset=utf-8';
+      body = JSON.stringify(body);
+    }
+    const base = String(window.GUANYE_AI_BASE || window.API_BASE_URL || '').replace(/\/+$/, '');
+    const response = await fetch(base + path, {
+      method,
+      headers,
+      body: method === 'GET' || method === 'HEAD' ? undefined : body,
+      credentials: 'omit',
+      cache: 'no-store',
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    const raw = await response.text();
+    let payload = {};
+    if (raw) {
+      try { payload = JSON.parse(raw); }
+      catch { payload = { error: raw }; }
+    }
+    if (!response.ok) {
+      const detail = payload?.error?.message || payload?.error || payload?.message || ('HTTP ' + response.status);
+      const error = new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+      error.status = response.status;
+      error.payload = payload;
+      throw error;
+    }
+    return payload;
+  }
+
+  return { request };
+})();
+
+window.GuanyeGeneration = (() => {
+  const terminal = new Set(['completed', 'partial', 'failed', 'cancelled']);
+  const maxImageBytes = 25 * 1024 * 1024;
+  const imageTypes = Object.freeze({
+    'image/png': { extension: '.png' },
+    'image/jpeg': { extension: '.jpg' },
+    'image/webp': { extension: '.webp' },
+  });
+
+  function element(tag, props = {}, children = []) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(props)) {
+      if (key === 'className') node.className = value;
+      else if (key === 'text') node.textContent = value == null ? '' : String(value);
+      else if (key === 'style' && value && typeof value === 'object') Object.assign(node.style, value);
+      else if (key.startsWith('on') && typeof value === 'function') node.addEventListener(key.slice(2).toLowerCase(), value);
+      else if (value !== null && value !== undefined) node.setAttribute(key, String(value));
+    }
+    for (const child of Array.isArray(children) ? children : [children]) {
+      if (child == null) continue;
+      node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+    }
+    return node;
+  }
+
+  function unwrap(payload) {
+    if (payload && typeof payload === 'object' && payload.job && typeof payload.job === 'object') return payload.job;
+    return payload && typeof payload === 'object' ? payload : {};
+  }
+
+  function artifactPayload(payload) {
+    return payload && typeof payload === 'object' && payload.data && typeof payload.data === 'object' && !payload.dataBase64
+      ? payload.data
+      : payload;
+  }
+
+  function normalizeImageType(value) {
+    const type = String(value || '').split(';', 1)[0].trim().toLowerCase();
+    if (type === 'image/jpg') return 'image/jpeg';
+    return imageTypes[type] ? type : '';
+  }
+
+  function detectImageType(bytes) {
+    if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
+      && bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a) return 'image/png';
+    if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+    if (bytes.length >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46
+      && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return 'image/webp';
+    return '';
+  }
+
+  function decodeBase64(value) {
+    let base64 = String(value || '').trim();
+    if (/^data:/i.test(base64)) {
+      const comma = base64.indexOf(',');
+      if (comma < 0 || !/;base64(?:;|$)/i.test(base64.slice(0, comma))) throw new Error('图片数据格式无效');
+      base64 = base64.slice(comma + 1);
+    }
+    base64 = base64.replace(/\s+/g, '');
+    if (!base64 || base64.length % 4 === 1 || !/^[A-Za-z0-9+/]+={0,2}$/.test(base64)) {
+      throw new Error('图片数据格式无效');
+    }
+    try {
+      const binary = window.atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+      return { bytes, base64 };
+    } catch {
+      throw new Error('图片数据格式无效');
+    }
+  }
+
+  function decodeImagePayload(payload) {
+    const value = artifactPayload(payload);
+    if (!value || typeof value !== 'object') throw new Error('图片数据格式无效');
+    const claimed = normalizeImageType(value.contentType);
+    if (value.contentType && !claimed) throw new Error('只支持 PNG、JPEG 或 WebP 图片');
+    const decoded = decodeBase64(value.dataBase64);
+    if (!decoded.bytes.length || decoded.bytes.length > maxImageBytes) throw new Error('图片大小无效');
+    const detected = detectImageType(decoded.bytes);
+    if (!detected) throw new Error('只支持 PNG、JPEG 或 WebP 图片');
+    if (claimed && claimed !== detected) throw new Error('图片类型与内容不一致');
+    return {
+      bytes: decoded.bytes,
+      base64: decoded.base64,
+      type: detected,
+      filename: value.filename,
+    };
+  }
+
+  function filenameFor(row, type, requested) {
+    let name = String(requested || '').trim().replace(/^.*[\\/]/, '');
+    name = name.replace(/[\u0000-\u001f<>:"/\\|?*]/g, '-').replace(/\.+$/, '').trim();
+    const extension = imageTypes[type]?.extension || '.png';
+    if (!name) {
+      const position = Number(row?.position);
+      name = Number.isFinite(position) && position > 0
+        ? 'page-' + String(position).padStart(4, '0')
+        : 'generated-page';
+    }
+    const match = name.match(/\.(png|jpe?g|webp)$/i);
+    if (match) {
+      const found = match[0].toLowerCase();
+      const compatible = type === 'image/jpeg'
+        ? found === '.jpg' || found === '.jpeg'
+        : found === extension;
+      if (compatible) return name;
+      name = name.slice(0, -match[0].length).trim();
+    }
+    return (name || 'generated-page') + extension;
+  }
+
+  function triggerDownload(href, filename) {
+    const link = document.createElement('a');
+    link.href = href;
+    link.download = filename;
+    link.rel = 'noopener';
+    link.style.display = 'none';
+    document.body.append(link);
+    link.click();
+    link.remove();
+  }
+
+  function triggerBytesDownload(bytes, type, filename) {
+    if (typeof Blob === 'function' && typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+      const url = URL.createObjectURL(new Blob([bytes], { type }));
+      triggerDownload(url, filename);
+      window.setTimeout(() => URL.revokeObjectURL(url), 5000);
+      return;
+    }
+    let binary = '';
+    const chunk = 0x8000;
+    for (let index = 0; index < bytes.length; index += chunk) {
+      binary += String.fromCharCode(...bytes.subarray(index, index + chunk));
+    }
+    triggerDownload('data:' + type + ';base64,' + window.btoa(binary), filename);
+  }
+
+  function isDisplayUrl(value) {
+    const text = String(value || '').trim();
+    if (!text) return false;
+    return /^data:image\/(?:png|jpe?g|webp)(?:;[^,]*)?;base64,/i.test(text)
+      || /^blob:/i.test(text)
+      || /^https?:\/\//i.test(text)
+      || /^\/(?!\/)/.test(text)
+      || /^\.{1,2}\//.test(text);
+  }
+
+  function safePreviewUrl(value) {
+    const text = String(value || '').trim();
+    return isDisplayUrl(text) || /^[A-Za-z0-9][A-Za-z0-9._~!$&'()*+,;=:@%/-]*$/.test(text);
+  }
+
+  function imageSource(row) {
+    const image = row?.image && typeof row.image === 'object' ? row.image : {};
+    const previewPath = String(row?.previewPath || image.previewPath || '');
+    const rawPath = String(image.path || row?.storagePath || row?.path || '');
+    return {
+      previewUrl: String(row?.previewUrl || image.previewUrl || ''),
+      path: rawPath || (previewPath && !isApiPath(previewPath) ? previewPath : ''),
+      artifactPath: String(row?.artifactPath || image.artifactPath || row?.downloadPath || image.downloadPath
+        || (isApiPath(previewPath) ? previewPath : '') || (isApiPath(rawPath) ? rawPath : '')),
+      downloadUrl: String(row?.downloadUrl || image.downloadUrl || ''),
+    };
+  }
+
+  function isApiPath(value) {
+    return typeof value === 'string' && value.startsWith('/api/');
+  }
+
+  function pagePosition(row) {
+    const value = row?.position ?? row?.pageNumber ?? row?.page_number;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : Number.MAX_SAFE_INTEGER;
+  }
+
+  function statusText(status) {
+    return ({
+      queued: '排队中', running: '生成中', completed: '已完成',
+      partial: '部分失败', failed: '生成失败', cancelled: '已取消',
+      succeeded: '已完成', queued_page: '等待生成',
+    })[status] || status || '等待中';
+  }
+
+  function reviewDeckId(job) {
+    if (!job || String(job.status || '') !== 'completed') return '';
+    const deckId = String(job.deckId || job.deck_id || '').trim();
+    return /^[A-Za-z0-9_-]{1,100}$/.test(deckId) ? deckId : '';
+  }
+
+  function mount(root, options = {}) {
+    if (!(root instanceof Element)) throw new Error('mount root 必须是 DOM 元素');
+    const opts = { ...options };
+    const planId = opts.planId || opts.plan_id || '';
+    let jobId = opts.jobId || opts.job_id || '';
+    let job = opts.job && typeof opts.job === 'object' ? opts.job : null;
+    let timer = 0;
+    let destroyed = false;
+    let busy = false;
+    let refreshInFlight = false;
+    let stateEpoch = 0;
+    let activeRefresh = null;
+    const pageEntries = new Map();
+    const imageUrls = new Map();
+    const downloadControllers = new Set();
+    const pendingPreviews = new Map();
+    const previewObserver = typeof window.IntersectionObserver === 'function'
+      ? new window.IntersectionObserver(entries => {
+        for (const { target, isIntersecting } of entries) {
+          if (!isIntersecting) continue;
+          const entry = pendingPreviews.get(target);
+          if (!entry) continue;
+          pendingPreviews.delete(target);
+          previewObserver.unobserve(target);
+          loadPagePreview(entry);
+        }
+      }, { rootMargin: '160px 0px' })
+      : null;
+
+    const style = element('style', { text: `
+      .gg-shell{box-sizing:border-box;width:100%;max-width:100%;font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif;color:#25313a;background:#fff;border:1px solid #dce3e7;border-radius:14px;padding:18px;overflow-wrap:anywhere}
+      .gg-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:14px;flex-wrap:wrap}
+      .gg-head>div{min-width:0;flex:1 1 190px}
+      .gg-head-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;flex:0 1 auto;min-width:0}
+      .gg-title{font-size:18px;font-weight:700;margin:0;overflow-wrap:anywhere}.gg-sub{color:#6a7780;font-size:12px;margin-top:4px;overflow-wrap:anywhere}
+      .gg-pill{display:inline-flex;align-items:center;border-radius:999px;padding:4px 10px;background:#eef5f7;color:#2f6574;font-size:12px;white-space:normal;overflow-wrap:anywhere;min-width:0;max-width:100%}
+      .gg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px;min-width:0}
+      .gg-card{min-width:0;max-width:100%;border:1px solid #e4e9ec;border-radius:11px;overflow:hidden;background:#fbfcfc}
+      .gg-preview{aspect-ratio:16/9;background:#f1f4f5;display:flex;align-items:center;justify-content:center;color:#89949b;overflow:hidden;min-width:0;text-align:center}
+      .gg-preview img{display:block;width:100%;height:100%;object-fit:contain;background:#fff}
+      .gg-meta{padding:10px 12px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;min-width:0}
+      .gg-name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1 1 120px}.gg-state{font-size:12px;color:#6d7b83;flex:0 1 auto;max-width:100%;overflow-wrap:anywhere}
+      .gg-error{color:#a53a35;font-size:12px;padding:0 12px 10px;overflow-wrap:anywhere;word-break:break-word}
+      .gg-actions{padding:0 12px 12px;display:flex;flex-wrap:wrap;gap:8px;min-width:0}
+      .gg-button{border:1px solid #cbd7dc;background:#fff;border-radius:8px;padding:6px 10px;cursor:pointer;color:#2f5967;max-width:100%;white-space:normal}
+      .gg-button.gg-review{background:#173d35;border-color:#173d35;color:#fff;font-weight:600}
+      .gg-button:disabled{opacity:.55;cursor:default}.gg-empty{padding:28px;text-align:center;color:#7b878e}
+      .gg-note{margin-top:12px;color:#6d7b83;font-size:12px;overflow-wrap:anywhere}.gg-bad{color:#a53a35}
+      @media(max-width:420px){
+        .gg-shell{padding:14px;border-radius:12px}
+        .gg-head{gap:8px}
+        .gg-grid{grid-template-columns:minmax(0,1fr)}
+        .gg-name{flex-basis:100%;white-space:normal}
+      }
+    ` });
+
+    const head = element('div', { className: 'gg-head' });
+    const title = element('h2', { className: 'gg-title', text: opts.title || 'AI 生成作品' });
+    const sub = element('div', { className: 'gg-sub', text: planId ? '计划 ' + planId : '' });
+    const status = element('span', { className: 'gg-pill', text: '准备中' });
+    const reviewButton = element('button', { className: 'gg-button gg-review', type: 'button', text: '查看生成评审', hidden: true, 'data-action': 'open-generation-review' });
+    const headActions = element('div', { className: 'gg-head-actions' }, [status, reviewButton]);
+    head.append(element('div', {}, [title, sub]), headActions);
+    const grid = element('div', { className: 'gg-grid' });
+    const note = element('div', { className: 'gg-note', text: '页面按原顺序展示；失败只允许单页重试。' });
+    const shell = element('section', { className: 'gg-shell', 'aria-live': 'polite' }, [head, grid, note]);
+    root.replaceChildren(style, shell);
+
+    function setStatus(text, bad = false) {
+      status.textContent = text;
+      status.className = 'gg-pill' + (bad ? ' gg-bad' : '');
+    }
+
+    function showMessage(text, bad = false) {
+      note.textContent = text;
+      note.className = 'gg-note' + (bad ? ' gg-bad' : '');
+    }
+
+    reviewButton.addEventListener('click', () => {
+      if (destroyed || !reviewDeckId(job)) return;
+      if (typeof opts.onOpenReview !== 'function') return;
+      try { opts.onOpenReview({ jobId: String(job?.id || jobId || '') }); } catch {}
+    });
+
+    function invalidateInFlight() {
+      stateEpoch += 1;
+      if (!activeRefresh) return;
+      const active = activeRefresh;
+      activeRefresh = null;
+      refreshInFlight = false;
+      try { active.controller.abort(); } catch {}
+    }
+
+    function pageRenderSignature(row) {
+      const image = row?.image && typeof row.image === 'object' ? row.image : {};
+      const source = imageSource(row);
+      return JSON.stringify([
+        row?.status ?? '',
+        row?.title ?? '',
+        pagePosition(row),
+        row?.position ?? null,
+        row?.pageNumber ?? null,
+        row?.page_number ?? null,
+        row?.error ?? '',
+        source.previewUrl,
+        source.path,
+        source.artifactPath,
+        source.downloadUrl,
+        row?.previewPath ?? '',
+        row?.artifactPath ?? '',
+        row?.downloadPath ?? '',
+        row?.downloadUrl ?? '',
+        row?.storagePath ?? '',
+        row?.path ?? '',
+        image.previewPath ?? '',
+        image.previewUrl ?? '',
+        image.artifactPath ?? '',
+        image.downloadPath ?? '',
+        image.downloadUrl ?? '',
+        image.path ?? '',
+        image.name ?? '',
+        row?.contentType ?? '',
+        row?.filename ?? '',
+      ]);
+    }
+
+    function pageEntryKey(kind, identity, occurrence = 0) {
+      return JSON.stringify([kind, identity, occurrence]);
+    }
+
+    function keyedPages(pages) {
+      const idCounts = new Map();
+      for (const row of pages) {
+        const id = String(row?.id ?? '').trim();
+        if (id) idCounts.set(id, (idCounts.get(id) || 0) + 1);
+      }
+      const idOccurrences = new Map();
+      const missingOccurrences = new Map();
+      return pages.map(row => {
+        const id = String(row?.id ?? '').trim();
+        let key;
+        if (id) {
+          const occurrence = idOccurrences.get(id) || 0;
+          idOccurrences.set(id, occurrence + 1);
+          key = pageEntryKey(idCounts.get(id) > 1 ? 'duplicate-id' : 'id', id, occurrence);
+        } else {
+          const position = pagePosition(row);
+          const occurrence = missingOccurrences.get(position) || 0;
+          missingOccurrences.set(position, occurrence + 1);
+          key = pageEntryKey('missing-id', position, occurrence);
+        }
+        return { key, row, signature: pageRenderSignature(row) };
+      });
+    }
+
+    function currentPreview(entry) {
+      return !destroyed
+        && entry.active
+        && pageEntries.get(entry.key) === entry
+        && entry.card.isConnected
+        && entry.preview.parentElement === entry.card;
+    }
+
+    function disposePageEntry(entry) {
+      if (!entry || !entry.active) return;
+      entry.active = false;
+      pendingPreviews.delete(entry.card);
+      previewObserver?.unobserve(entry.card);
+      for (const controller of entry.downloads) {
+        try { controller.abort(); } catch {}
+      }
+      entry.downloads.clear();
+      if (pageEntries.get(entry.key) === entry) pageEntries.delete(entry.key);
+    }
+
+    function clearPreviewObservations() {
+      for (const entry of [...pageEntries.values()]) disposePageEntry(entry);
+      pageEntries.clear();
+      previewObserver?.disconnect();
+      pendingPreviews.clear();
+    }
+
+    function createPageEntry(key, row, signature) {
+      const preview = element('div', { className: 'gg-preview', text: '等待图片' });
+      const state = element('span', { className: 'gg-state', text: statusText(row.status) });
+      const meta = element('div', { className: 'gg-meta' }, [
+        element('span', { className: 'gg-name', text: row.title || ('第 ' + row.position + ' 页') }),
+        state,
+      ]);
+      const children = [preview, meta];
+      if (row.error) children.push(element('div', { className: 'gg-error', text: row.error }));
+      const entry = {
+        key,
+        row,
+        signature,
+        preview,
+        card: null,
+        active: true,
+        loadStarted: false,
+        previewFailed: false,
+        downloads: new Set(),
+      };
+      if (row.status === 'failed') {
+        const button = element('button', { className: 'gg-button', type: 'button', text: '仅重试本页' });
+        button.addEventListener('click', () => retryPage(entry.row?.id, button));
+        children.push(element('div', { className: 'gg-actions' }, [button]));
+      } else if (row.status === 'succeeded') {
+        const button = element('button', { className: 'gg-button', type: 'button', text: '下载图片' });
+        button.addEventListener('click', () => downloadPage(entry.row, button, entry));
+        children.push(element('div', { className: 'gg-actions' }, [button]));
+      }
+      entry.card = element('article', { className: 'gg-card', 'data-page-key': key }, children);
+      return entry;
+    }
+
+    function preparePagePreview(entry) {
+      if (!entry.active || entry.loadStarted || entry.previewFailed) return;
+      const row = entry.row;
+      if (row.status !== 'succeeded') {
+        entry.preview.textContent = statusText(row.status);
+        entry.loadStarted = true;
+        return;
+      }
+      const source = imageSource(row);
+      if (!source.previewUrl && !source.path && !source.artifactPath) {
+        entry.preview.textContent = '图片暂不可用';
+        entry.loadStarted = true;
+        return;
+      }
+      if (previewObserver) {
+        pendingPreviews.set(entry.card, entry);
+        previewObserver.observe(entry.card);
+      } else {
+        loadPagePreview(entry);
+      }
+    }
+
+    function loadPagePreview(entry) {
+      if (!entry.active || entry.loadStarted || !currentPreview(entry)) return;
+      entry.loadStarted = true;
+      pendingPreviews.delete(entry.card);
+      previewObserver?.unobserve(entry.card);
+      entry.preview.textContent = '加载图片…';
+      resolveImage(entry.row).then(url => {
+        if (!url) {
+          if (currentPreview(entry)) {
+            entry.previewFailed = true;
+            invalidateImageCache(entry.row, url);
+            entry.preview.textContent = '图片暂不可用';
+          }
+          return;
+        }
+        if (!currentPreview(entry)) return;
+        const image = element('img', { alt: entry.row.title || ('第 ' + entry.row.position + ' 页'), loading: 'lazy' });
+        image.addEventListener('error', () => {
+          if (!currentPreview(entry)) return;
+          entry.previewFailed = true;
+          invalidateImageCache(entry.row, url);
+          entry.preview.textContent = '图片暂不可用';
+        }, { once: true });
+        image.src = url;
+        if (!currentPreview(entry)) return;
+        entry.preview.replaceChildren(image);
+      }).catch(() => {
+        if (!currentPreview(entry)) return;
+        entry.previewFailed = true;
+        entry.preview.textContent = '图片暂不可用';
+      });
+    }
+
+    function imageCacheKey(row) {
+      const source = imageSource(row);
+      return [row?.id || '', source.previewUrl, source.path, source.artifactPath].join('|');
+    }
+
+    function invalidateImageCache(row, url = '') {
+      const key = imageCacheKey(row);
+      const entry = imageUrls.get(key);
+      if (entry && (!url || entry.url === url)) imageUrls.delete(key);
+    }
+
+    async function resolveImage(row) {
+      const source = imageSource(row);
+      const key = imageCacheKey(row);
+      const cached = imageUrls.get(key);
+      if (cached) return cached.promise;
+      const directPreview = source.previewUrl && !isApiPath(source.previewUrl) && isDisplayUrl(source.previewUrl)
+        ? source.previewUrl
+        : '';
+      const directPath = source.previewUrl && !isApiPath(source.previewUrl) && safePreviewUrl(source.previewUrl)
+        ? source.previewUrl
+        : '';
+      let resolverAttempted = false;
+      const entry = { promise: null, url: '' };
+      const promise = (async () => {
+        if (directPreview) return directPreview;
+        if (source.previewUrl && isApiPath(source.previewUrl)) {
+          try {
+            const artifact = decodeImagePayload(await window.GuanyeAI.request(source.previewUrl));
+            return 'data:' + artifact.type + ';base64,' + artifact.base64;
+          } catch {}
+        }
+        if (source.path) {
+          if (typeof opts.resolveImage === 'function') {
+            resolverAttempted = true;
+            try {
+              const url = await opts.resolveImage(source.path, row);
+              if (url && safePreviewUrl(url)) return url;
+            } catch {}
+          } else if (window.Cloud?.imageUrl) {
+            resolverAttempted = true;
+            try {
+              const url = await window.Cloud.imageUrl(source.path);
+              if (url && safePreviewUrl(url)) return url;
+            } catch {}
+          }
+        }
+        if (source.artifactPath && isApiPath(source.artifactPath)) {
+          try {
+            const artifact = decodeImagePayload(await window.GuanyeAI.request(source.artifactPath));
+            return 'data:' + artifact.type + ';base64,' + artifact.base64;
+          } catch {}
+        }
+        if (source.path && (!resolverAttempted || isDisplayUrl(source.path))) return source.path;
+        if (directPath) return directPath;
+        throw new Error('图片暂不可用');
+      })();
+      entry.promise = promise;
+      imageUrls.set(key, entry);
+      promise.then(url => { entry.url = url; }, () => {
+        if (imageUrls.get(key) === entry) imageUrls.delete(key);
+      });
+      return promise;
+    }
+
+    function ensureDownloadActive(signal) {
+      if (destroyed || signal?.aborted) {
+        const error = new Error('下载已取消');
+        error.name = 'AbortError';
+        throw error;
+      }
+    }
+
+    async function downloadFromUrl(url, row, signal) {
+      ensureDownloadActive(signal);
+      const value = String(url || '').trim();
+      if (!value) throw new Error('没有可下载的图片');
+      if (/^data:/i.test(value)) {
+        const comma = value.indexOf(',');
+        const contentType = comma >= 0 ? value.slice(5, comma).split(';', 1)[0] : '';
+        const decoded = decodeImagePayload({ dataBase64: value, contentType });
+        ensureDownloadActive(signal);
+        triggerBytesDownload(decoded.bytes, decoded.type, filenameFor(row, decoded.type, ''));
+        return;
+      }
+      let absolute;
+      try { absolute = new URL(value, document.baseURI); }
+      catch { throw new Error('图片下载地址无效'); }
+      if (!['blob:', 'http:', 'https:'].includes(absolute.protocol)) throw new Error('图片下载地址无效');
+      ensureDownloadActive(signal);
+      let response;
+      try {
+        response = await window.fetch(absolute.href, {
+          credentials: 'same-origin', cache: 'no-store', mode: 'cors', signal,
+        });
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        throw new Error('图片下载失败');
+      }
+      ensureDownloadActive(signal);
+      if (!response.ok) throw new Error('图片下载失败');
+      const declared = normalizeImageType(response.headers.get('content-type'));
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      ensureDownloadActive(signal);
+      if (!bytes.length || bytes.length > maxImageBytes) throw new Error('图片大小无效');
+      const detected = detectImageType(bytes);
+      if (!detected || (declared && declared !== detected)) throw new Error('只支持 PNG、JPEG 或 WebP 图片');
+      ensureDownloadActive(signal);
+      triggerBytesDownload(bytes, detected, filenameFor(row, detected, ''));
+    }
+
+    async function downloadPage(row, button, entry = null) {
+      if (destroyed) return;
+      const downloadPath = String(row?.downloadPath || row?.image?.downloadPath || '');
+      const downloadUrl = String(row?.downloadUrl || row?.image?.downloadUrl || '');
+      const controller = new AbortController();
+      downloadControllers.add(controller);
+      if (entry) entry.downloads.add(controller);
+      const label = button.textContent;
+      button.disabled = true;
+      button.textContent = '准备下载…';
+      try {
+        if (downloadPath) {
+          if (!isApiPath(downloadPath)) throw new Error('下载地址无效');
+          const payload = await window.GuanyeAI.request(downloadPath, { signal: controller.signal });
+          ensureDownloadActive(controller.signal);
+          const artifact = decodeImagePayload(payload);
+          ensureDownloadActive(controller.signal);
+          triggerBytesDownload(artifact.bytes, artifact.type, filenameFor(row, artifact.type, artifact.filename));
+        } else if (downloadUrl) {
+          await downloadFromUrl(downloadUrl, row, controller.signal);
+        } else {
+          await downloadFromUrl(await resolveImage(row), row, controller.signal);
+        }
+      } catch (error) {
+        if (!destroyed && !controller.signal.aborted) showMessage(error.message || '下载图片失败', true);
+      } finally {
+        downloadControllers.delete(controller);
+        if (entry) entry.downloads.delete(controller);
+        if (!destroyed && button.isConnected) {
+          button.disabled = false;
+          button.textContent = label;
+        }
+      }
+    }
+
+    function renderPages() {
+      const pages = Array.isArray(job?.pages) ? job.pages.slice().sort((a, b) => pagePosition(a) - pagePosition(b) || String(a?.id || '').localeCompare(String(b?.id || ''))) : [];
+      const desired = keyedPages(pages);
+      if (!desired.length) {
+        clearPreviewObservations();
+        grid.replaceChildren(element('div', { className: 'gg-empty', text: '还没有生成页面。' }));
+        return;
+      }
+      const empty = Array.from(grid.children).find(child => child.classList.contains('gg-empty'));
+      empty?.remove();
+      const desiredKeys = new Set(desired.map(item => item.key));
+      for (const entry of [...pageEntries.values()]) {
+        if (desiredKeys.has(entry.key)) continue;
+        disposePageEntry(entry);
+        entry.card.remove();
+      }
+      const created = [];
+      const cards = desired.map(item => {
+        let entry = pageEntries.get(item.key);
+        if (entry && (entry.signature !== item.signature || entry.previewFailed || entry.card.parentElement !== grid)) {
+          disposePageEntry(entry);
+          entry.card.remove();
+          entry = null;
+        }
+        if (!entry) {
+          entry = createPageEntry(item.key, item.row, item.signature);
+          pageEntries.set(entry.key, entry);
+          created.push(entry);
+        } else {
+          entry.row = item.row;
+        }
+        return entry.card;
+      });
+      cards.forEach((card, index) => {
+        if (grid.children[index] !== card) grid.insertBefore(card, grid.children[index] || null);
+      });
+      for (const entry of created) preparePagePreview(entry);
+    }
+
+    function applyJob(next) {
+      if (destroyed || !next || typeof next !== 'object') return;
+      const expectedJobId = String(opts.jobId || opts.job_id || '');
+      const nextJobId = String(next.id || '');
+      if (expectedJobId && nextJobId && nextJobId !== expectedJobId) return;
+      job = next;
+      jobId = next.id || jobId;
+      title.textContent = next.title || opts.title || 'AI 生成作品';
+      sub.textContent = next.planId ? '计划 ' + next.planId : sub.textContent;
+      const pages = Array.isArray(next.pages) ? next.pages : [];
+      const done = pages.filter(row => row.status === 'succeeded').length;
+      setStatus(statusText(next.status) + (pages.length ? ' · ' + done + '/' + pages.length : ''), next.status === 'failed');
+      const deckId = reviewDeckId(next);
+      reviewButton.hidden = !deckId;
+      reviewButton.disabled = !deckId;
+      if (deckId) {
+        reviewButton.dataset.jobId = String(next.id || jobId || '');
+        reviewButton.dataset.deckId = deckId;
+      } else {
+        delete reviewButton.dataset.jobId;
+        delete reviewButton.dataset.deckId;
+      }
+      renderPages();
+      if (typeof opts.onUpdate === 'function') {
+        try { opts.onUpdate(next); } catch {}
+      }
+      if (terminal.has(next.status)) stopPolling();
+    }
+
+    function stopPolling() {
+      if (timer) clearTimeout(timer);
+      timer = 0;
+    }
+
+    function schedule() {
+      stopPolling();
+      if (destroyed || busy || !jobId || terminal.has(job?.status)) return;
+      const requestedDelay = Number(opts.pollMs);
+      timer = window.setTimeout(refresh, Number.isFinite(requestedDelay) && requestedDelay >= 1000 ? requestedDelay : 3000);
+    }
+
+    async function refresh() {
+      if (destroyed || busy || refreshInFlight) return;
+      stopPolling();
+      const controller = new AbortController();
+      const handle = { controller, epoch: stateEpoch };
+      activeRefresh = handle;
+      refreshInFlight = true;
+      const isCurrent = () => !destroyed && activeRefresh === handle && stateEpoch === handle.epoch && !controller.signal.aborted;
+      try {
+        const query = jobId ? '?job_id=' + encodeURIComponent(jobId) : '?plan_id=' + encodeURIComponent(planId);
+        const next = unwrap(await window.GuanyeAI.request('/api/ai/generation' + query, { signal: controller.signal }));
+        if (!isCurrent()) return;
+        applyJob(next);
+        if (!terminal.has(job?.status)) schedule();
+      } catch (error) {
+        if (!isCurrent()) return;
+        setStatus('读取失败', true);
+        showMessage(error.message || '读取生成状态失败', true);
+        schedule();
+      } finally {
+        if (activeRefresh === handle) {
+          activeRefresh = null;
+          refreshInFlight = false;
+        }
+      }
+    }
+
+    async function start() {
+      if (destroyed || busy) return;
+      if (!planId && !jobId) {
+        setStatus('缺少计划', true);
+        showMessage('请提供 planId。', true);
+        return;
+      }
+      invalidateInFlight();
+      stopPolling();
+      busy = true;
+      try {
+        if (!jobId) {
+          setStatus('提交中');
+          const next = unwrap(await window.GuanyeAI.request('/api/ai/generation', { method: 'POST', body: { plan_id: planId } }));
+          applyJob(next);
+        }
+      } catch (error) {
+        if (!destroyed) {
+          setStatus('提交失败', true);
+          showMessage(error.message || '提交生成计划失败', true);
+        }
+      } finally {
+        busy = false;
+        if (!destroyed && jobId && !terminal.has(job?.status)) schedule();
+      }
+    }
+
+    async function retryPage(pageId, button) {
+      if (!pageId || !jobId || busy || destroyed) return;
+      invalidateInFlight();
+      stopPolling();
+      busy = true;
+      button.disabled = true;
+      try {
+        const next = unwrap(await window.GuanyeAI.request('/api/ai/generation/retry', {
+          method: 'POST', body: { job_id: jobId, page_ids: [pageId] },
+        }));
+        if (!destroyed) applyJob(next);
+      } catch (error) {
+        if (!destroyed) showMessage(error.message || '单页重试失败', true);
+      } finally {
+        busy = false;
+        if (!destroyed && button.isConnected) button.disabled = false;
+        if (!destroyed && jobId && !terminal.has(job?.status)) schedule();
+      }
+    }
+
+    function destroy() {
+      destroyed = true;
+      clearPreviewObservations();
+      invalidateInFlight();
+      stopPolling();
+      for (const controller of downloadControllers) {
+        try { controller.abort(); } catch {}
+      }
+      downloadControllers.clear();
+      root.replaceChildren();
+    }
+
+    if (job) applyJob(job);
+    if (jobId && !terminal.has(job?.status)) schedule();
+    else if (!jobId && opts.autoStart !== false) Promise.resolve().then(start);
+
+    return { start, refresh, retryPage, destroy, get job() { return job; } };
+  }
+
+  return { mount };
+})();

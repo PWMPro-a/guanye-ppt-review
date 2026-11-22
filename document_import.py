@@ -4,10 +4,20 @@ import argparse
 import json
 import shutil
 import subprocess
+import threading
 import zipfile
 from pathlib import Path
 
 MAX_PAGES = 600
+_POWERPOINT_LOCK = threading.Lock()
+
+
+def _set_powerpoint_setting(app, name, value, changed):
+    original = getattr(app, name)
+    if original == value:
+        return
+    setattr(app, name, value)
+    changed.append((name, original))
 
 
 def progress(folder, message, current=0, total=0):
@@ -27,30 +37,37 @@ def powerpoint_pdf(source, output):
             raise ValueError('PPTX 文件已损坏，请重新保存后导入')
     elif source.read_bytes()[:8] != bytes.fromhex('D0CF11E0A1B11AE1'):
         raise ValueError('PPT 文件已损坏或格式不正确')
-    # A separate Office instance never attaches to the user's existing presentation.
     try:
         import pythoncom
         import win32com.client
-        pythoncom.CoInitialize()
-        app = presentation = None
-        try:
-            app = win32com.client.DispatchEx('PowerPoint.Application')
-            app.AutomationSecurity = 3
-            app.DisplayAlerts = 1
-            presentation = app.Presentations.Open(str(source.resolve()), -1, 0, 0)
-            if presentation.Slides.Count > MAX_PAGES:
-                raise ValueError('每份文档最多支持 600 页，请拆分后导入')
-            # SaveAs PDF avoids pywin32's optional COM PrintRange marshaling issue.
-            presentation.SaveAs(str(output.resolve()), 32)
-            return
-        finally:
-            if presentation is not None:
-                try: presentation.Close()
+        # PowerPoint is a MultiUse COM server, so DispatchEx does not guarantee an
+        # isolated process. Never Quit the shared app; only close the presentation
+        # opened here. Serialize the COM apartment and temporary setting changes.
+        with _POWERPOINT_LOCK:
+            pythoncom.CoInitialize()
+            app = presentation = None
+            changed_settings = []
+            try:
+                app = win32com.client.DispatchEx('PowerPoint.Application')
+                _set_powerpoint_setting(app, 'AutomationSecurity', 3, changed_settings)
+                _set_powerpoint_setting(app, 'DisplayAlerts', 1, changed_settings)
+                presentation = app.Presentations.Open(str(source.resolve()), -1, 0, 0)
+                if presentation.Slides.Count > MAX_PAGES:
+                    raise ValueError('每份文档最多支持 600 页，请拆分后导入')
+                # SaveAs PDF avoids pywin32's optional COM PrintRange marshaling issue.
+                presentation.SaveAs(str(output.resolve()), 32)
+                return
+            finally:
+                if presentation is not None:
+                    try: presentation.Close()
+                    except Exception: pass
+                if app is not None:
+                    for name, original in reversed(changed_settings):
+                        try: setattr(app, name, original)
+                        except Exception: pass
+                app = presentation = None
+                try: pythoncom.CoUninitialize()
                 except Exception: pass
-            if app is not None:
-                try: app.Quit()
-                except Exception: pass
-            pythoncom.CoUninitialize()
     except ValueError:
         raise
     except Exception as office_error:
