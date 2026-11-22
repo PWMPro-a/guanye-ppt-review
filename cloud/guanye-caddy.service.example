@@ -1,0 +1,45 @@
+# DEP-IP-02 - Caddy systemd unit for the validated Beijing ECS public-IP host.
+# Expected install path: /etc/systemd/system/guanye-caddy.service
+# Repository source: cloud/guanye-caddy.service.example
+# Upstream unit: https://github.com/caddyserver/dist/blob/master/init/caddy.service
+#
+# Required host layout:
+#   /usr/local/bin/caddy             verified standalone Caddy v2.11.9 binary
+#   /etc/guanye/Caddyfile             installed from cloud/Caddyfile.team-ip.example
+#   /etc/guanye/caddy.env             PUBLIC_IP and GUANYE_SITE_ROOT, mode 0600
+#   /srv/guanye/site                  persistent site root; never serve a staging copy
+#
+# DynamicUser avoids depending on a pre-created static caddy account. Caddy's
+# persistent data lives below StateDirectory and is exposed through XDG_DATA_HOME.
+
+[Unit]
+Description=Guanye Caddy public-IP reverse proxy and same-origin site
+Documentation=https://caddyserver.com/docs/
+Documentation=https://github.com/caddyserver/dist/blob/master/init/caddy.service
+After=network.target network-online.target
+Requires=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+DynamicUser=yes
+EnvironmentFile=/etc/guanye/caddy.env
+Environment=HOME=/var/lib/guanye-caddy
+Environment=XDG_DATA_HOME=/var/lib/guanye-caddy
+StateDirectory=guanye-caddy
+StateDirectoryMode=0700
+ExecStart=/usr/local/bin/caddy run --config /etc/guanye/Caddyfile --adapter caddyfile
+ExecReload=/usr/local/bin/caddy reload --config /etc/guanye/Caddyfile --adapter caddyfile --force
+TimeoutStopSec=30s
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=1048576
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

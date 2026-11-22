@@ -1,0 +1,5 @@
+# Python 3.12 / Debian bookworm: PyPI 1.26.5 publishes cp39-abi3 manylinux_2_28 wheels.
+# Both Linux wheels are pinned so the same image manifest remains reproducible on amd64/arm64.
+PyMuPDF==1.26.5 \
+    --hash=sha256:7dfea81fdd73437a6a6ce83e1fcf556faee9327a6540571e58bf04fa362bb0cd \
+    --hash=sha256:caad0ffeb63dcc4a29ca40f3c68d7b78d32a932e834b0056b529cc0bdbaaffc9

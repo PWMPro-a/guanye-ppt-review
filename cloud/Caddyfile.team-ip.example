@@ -1,0 +1,49 @@
+# 观页 · 团队公网 IP 同源静态站点示例
+#
+# 与 Caddyfile.public-ip.example 并存：后者继续作为 GitHub Pages API-only 部署入口。
+# 本文件只用于将候选静态 dist 与 gateway 放在同一 origin 服务。
+#
+# 最低 Caddy 版本：v2.11.3。
+# 官方依据：
+#   https://caddyserver.com/docs/caddyfile/directives/root
+#   https://caddyserver.com/docs/caddyfile/directives/handle
+#   https://github.com/caddyserver/caddy/blob/v2.11.3/caddyconfig/caddyfile/parse.go#L37-L64
+#
+# 输入：
+# - PUBLIC_IP：Let's Encrypt 可为本机签发证书的公开 IP 字面量；只填 IP。
+# - GUANYE_SITE_ROOT：已构建候选静态 dist 的目录；建议绝对路径，允许含空格。
+#   PowerShell 7 示例：
+#     $env:PUBLIC_IP = '203.0.113.10'
+#     $env:GUANYE_SITE_ROOT = 'D:\guanye\dist'
+#
+# 路由契约：
+# - /healthz、/api 与 /api/*：反向代理到回环 gateway 127.0.0.1:8787。
+# - 其余请求：从 GUANYE_SITE_ROOT 读取静态文件；文件缺失返回 404。
+
+# 全局选项块：公网 IP 位于 NAT 后时，浏览器通常不发送 SNI。
+# default_sni 为无 SNI 的 TLS 握手提供默认名称，避免 internal error。
+# 参考：https://github.com/caddyserver/caddy/issues/7526
+# 与其他单站配置合并时，必须把这些全局选项合并到目标全局块；
+# 同一 Caddyfile 不能声明多个全局选项块。
+{
+	default_sni {$PUBLIC_IP}
+}
+
+{$PUBLIC_IP} {
+	tls {
+		issuer acme {
+			dir https://acme-v02.api.letsencrypt.org/directory
+			profile shortlived
+		}
+	}
+
+	@gateway path /healthz /api /api/*
+	handle @gateway {
+		reverse_proxy 127.0.0.1:8787
+	}
+
+	handle {
+		root * "{$GUANYE_SITE_ROOT}"
+		file_server
+	}
+}

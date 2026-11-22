@@ -6,3 +6,4 @@ dist/
 cloud/private*
 cloud/bootstrap.sql
 node_modules/
+supabase/.temp/

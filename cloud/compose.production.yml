@@ -1,0 +1,53 @@
+# DEP-IP-02 - repeatable production runtime for the validated Beijing ECS.
+# Expected repository path: cloud/compose.production.yml
+# Upstream references:
+#   https://github.com/compose-spec/compose-spec/blob/main/spec.md
+#   https://docs.docker.com/reference/compose-file/services/#pull_policy
+# Runtime baseline in this repository: cloud/compose.yml
+#
+# Required host-side inputs, never committed:
+#   GUANYE_IMAGE     Explicitly selected local candidate tag or digest.
+#   GUANYE_ENV_FILE  Absolute host-only private gateway env file, for example
+#                    /etc/guanye/gateway.env with mode 0600 owned by root.
+#
+# There is deliberately no build section. pull_policy: never makes a missing
+# local image fail closed instead of pulling implicitly.
+
+name: guanye-production
+
+x-guanye-production-service: &guanye-production-service
+  image: "${GUANYE_IMAGE:?Set GUANYE_IMAGE to an explicitly selected local tag or digest}"
+  pull_policy: never
+  user: "10001:10001"
+  init: true
+  restart: unless-stopped
+  env_file:
+    - path: "${GUANYE_ENV_FILE:?Set GUANYE_ENV_FILE to the absolute host-only private env file path}"
+      required: true
+  environment:
+    GUANYE_HOST: "0.0.0.0"
+    GUANYE_PORT: "8787"
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  gateway:
+    <<: *guanye-production-service
+    stop_grace_period: 20s
+    ports:
+      - "127.0.0.1:8787:8787"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8787/healthz', timeout=3); raise SystemExit(0 if response.status == 200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  review-worker:
+    <<: *guanye-production-service
+    stop_grace_period: 5m
+    command: ["--review-worker"]
