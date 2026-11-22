@@ -34,13 +34,16 @@ class ImageRequestUncertain(WorkerError):
 
 class ImageProvider:
     def __init__(self, base, key, model, *, result_origins=(), size='1536x1024',
-                 quality='medium', timeout=180, transport=None):
+                 quality='medium', response_format=None, timeout=180, transport=None):
         _https_url(base)
         if not all(re.fullmatch(r'[\x21-\x7e]{1,512}', item) for item in (key, model)):
             raise ValueError('缺少有效的生图渠道密钥或模型标识')
         self.base, self.key, self.model = base.rstrip('/'), key, model
         self.result_origins = frozenset(_origin(url) for url in result_origins)
         self.size, self.quality, self.timeout = size, quality, timeout
+        if response_format not in (None, 'b64_json', 'url'):
+            raise ValueError('生图响应格式无效')
+        self.response_format = response_format
         self.transport = transport or DirectTransport(MAX_JSON_BYTES)
 
     def generate(self, page, reference=None, *, before_send=lambda: None):
@@ -53,6 +56,8 @@ class ImageProvider:
             raise WorkerError('页面成品格式不受支持', 422)
         fields = {'model': self.model, 'prompt': prompt.strip(), 'n': '1',
                   'size': self.size, 'quality': self.quality, 'output_format': fmt}
+        if self.response_format:
+            fields['response_format'] = self.response_format
         path, mime = '/images/generations', 'application/json'
         if reference is not None:
             raw, ref_mime = reference

@@ -211,7 +211,7 @@ def main(argv=None):
         if model_name!='gpt-image-2.6-sunburst':
             parser.error('本工作区只启用 gpt-image-2.6-sunburst')
         image = ImageProvider(required('GUANYE_IMAGE_API_BASE'), required('GUANYE_IMAGE_API_KEY'),
-                              model_name,
+                              model_name, size='1536x864', response_format='b64_json',
                               result_origins=os.environ.get('GUANYE_IMAGE_RESULT_ORIGINS', '').split())
         client = ECSImageClient(public['url'], public['workspaceId'], public['anonKey'], tokens,
                                 required('GUANYE_IMAGE_WORKER_TOKEN'))

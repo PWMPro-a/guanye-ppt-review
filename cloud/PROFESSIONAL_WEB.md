@@ -11,7 +11,7 @@
 1. 在原项目运行 python -B -m cloud.manage migration-plan。备份 PostgreSQL 和所有私有文件；单独恢复、校验数量和摘要，再安装待应用迁移。M36 只安装能力，professional_web 默认关闭。
 2. 用生产项目中的独立演练工作区验证真实管理员、评分师和投递成员。核对不同网络访问、中文 PPT/PDF、个人回执、评分历史、策划、引用图生图及重启续跑。生产开启前再次确认备份与频率；定时计划应输出独立的加密快照，恢复密钥与远端存储分开保管。
 3. 用 cloud/Dockerfile 构建并标记候选镜像。cloud/compose.professional.yml 从 root 专用目录读取 gateway.env、worker.env、intake.env、review.env、image.env。共享配置只包括 GUANYE_SUPABASE_URL、GUANYE_SUPABASE_ANON_KEY、GUANYE_WORKSPACE_ID 和后台评分师登录变量。预评和生图使用各自的 Edge Function worker token。网关不使用 Supabase service role key。浏览器来源设置为 GUANYE_ALLOWED_ORIGINS=https://pwmpro-a.github.io。
-4. 使用供应商给出的正式 HTTPS API 入口配置 GUANYE_IMAGE_API_BASE，指定 GUANYE_IMAGE_MODEL=gpt-image-2.6-sunburst。先核对渠道授权、接口和价格，再用合成参考图验证一次。供应商返回文件地址时才配置 GUANYE_IMAGE_RESULT_ORIGINS。密钥不进入代码、日志或网页。
+4. 使用供应商给出的正式 HTTPS API 入口配置 GUANYE_IMAGE_API_BASE，指定 GUANYE_IMAGE_MODEL=gpt-image-2.6-sunburst。工作进程请求 1536×864（16:9）和 b64_json。先核对渠道授权、接口和价格，再用合成参考图验证一次。若该密钥只能返回文件地址，只把经核实的文件来源添加到 GUANYE_IMAGE_RESULT_ORIGINS。密钥不进入代码、日志或网页。
 5. 参考 cloud/Caddyfile.public-ip.example 验证公网 IP 的 TLS、IP SAN、健康检查和 API CORS。记录生产 Pages 最近一次成功部署的团队版完整提交 SHA，并保留其构建包做内容校验。全部验收后，通过 service role 调用 professional_web_activate，再用 GUANYE_WEB_PROFESSIONAL=1 和 HTTPS AI_GATEWAY_URL 构建并部署 GitHub Pages。现有链接不变。
 6. 回退时停正式 ECS 工作进程，清除 Pages 的 GUANYE_WEB_PROFESSIONAL 和 AI_GATEWAY_URL 变量以免下次自动部署重新打开入口。在 main 上手动运行 Pages 工作流，传入记录的团队版提交 SHA，并调用 professional_web_rollback 恢复工作区角色和并发。工作流只从 main 的 Git 历史取旧的公开文件，强制构建为团队版，不依赖 GitHub 上可能已过期的构建包。确认数据库回到团队模式、Pages 完成部署且成员可以重新打开团队版。评分与归档记录保留；只有数据损坏时才需要从备份恢复。
 

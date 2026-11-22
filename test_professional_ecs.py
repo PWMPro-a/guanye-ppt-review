@@ -1,11 +1,16 @@
 
 import contextlib
+from email import policy
+from email.parser import BytesParser
+import io
 import json
 from pathlib import Path
 import tempfile
 from threading import Thread
 import unittest
 from unittest.mock import Mock
+
+from PIL import Image
 
 from cloud.ai_gateway import Gateway, GatewayHTTPServer, HTTPResponse, Router
 from cloud.ecs_image_provider import ImageProvider, ImageRequestUncertain
@@ -70,6 +75,31 @@ class ECSWorkerTest(unittest.TestCase):
             channel.generate(page)
         self.assertEqual(transport.call_args_list[0].args[1], 'https://images.example/v1/images/generations')
         self.assertEqual(transport.call_args_list[1].args[:3], ('GET', public, {'Accept': 'image/*'}))
+
+    def test_image_worker_submits_one_wide_edit_with_reference_and_inline_response(self):
+        import base64
+
+        reference = io.BytesIO()
+        Image.new('RGB', (32, 18), 'navy').save(reference, 'PNG')
+        raw = reference.getvalue()
+        transport = Mock(return_value=HTTPResponse(200, {}, json.dumps({
+            'data': [{'b64_json': base64.b64encode(raw).decode('ascii')}],
+        }).encode()))
+        channel = ImageProvider('https://images.example/v1', 'test-key', 'gpt-image-2.6-sunburst',
+                                size='1536x864', response_format='b64_json', transport=transport)
+        page = {'prompt': '参考图测试', 'contentType': 'image/png'}
+        self.assertEqual(channel.generate(page, (raw, 'image/png')), (raw, 'image/png', 32, 18))
+        transport.assert_called_once()
+        method, url, headers, body, _ = transport.call_args.args
+        self.assertEqual((method, url), ('POST', 'https://images.example/v1/images/edits'))
+        message = BytesParser(policy=policy.default).parsebytes(
+            ('Content-Type: '+headers['Content-Type']+'\r\n\r\n').encode('ascii') + body)
+        parts = {p.get_param('name', header='Content-Disposition'): p for p in message.iter_parts()}
+        for key, value in {'model': 'gpt-image-2.6-sunburst', 'prompt': '参考图测试', 'n': '1',
+                           'size': '1536x864', 'response_format': 'b64_json'}.items():
+            self.assertEqual(parts[key].get_payload(decode=True).decode('utf-8'), value)
+        self.assertEqual(parts['image'].get_content_type(), 'image/png')
+        self.assertEqual(parts['image'].get_payload(decode=True), raw)
 
 
 @contextlib.contextmanager
