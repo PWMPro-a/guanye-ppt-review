@@ -38,7 +38,8 @@ async function verifySingleJudgeIntake(db){
  const insertRow=(row,submittedBy=row.submitted_by)=>query(db,
   `insert into public.single_judge_intake(id,workspace_id,submitted_by,title,original_name,object_path,content_type,size_bytes,sha256,ai_allowed)
    values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,[row.id,W,submittedBy,row.title,row.original_name,path(row),row.content_type,row.size_bytes,row.sha256,row.ai_allowed]);
- const addObject=(name,ownerId=null)=>query(db,"insert into storage.objects(id,name,bucket_id,owner_id) values($1,$2,'ppt-library',$3)",[crypto.randomUUID(),name,ownerId]);
+ const addObject=(name,ownerId=null,metadata=null,bucket='ppt-library')=>query(db,"insert into storage.objects(id,name,bucket_id,owner_id,metadata) values($1,$2,$3,$4,$5)",[crypto.randomUUID(),name,bucket,ownerId,metadata]);
+ const addOriginal=(row,owner=row.submitted_by)=>addObject(path(row),owner,{size:row.size_bytes,mimetype:row.content_type});
  const deleteObject=(name)=>query(db,'delete from storage.objects where bucket_id=$1 and name=$2 returning id',['ppt-library',name]);
  const objectExists=async(name)=>(await query(db,'select id from storage.objects where bucket_id=$1 and name=$2',['ppt-library',name])).length===1;
  const visibleObjectCount=async(actorId,name)=>{await asAuth(db,actorId);return (await query(db,'select id from storage.objects where bucket_id=$1 and name=$2',['ppt-library',name])).length;};
@@ -80,8 +81,26 @@ async function verifySingleJudgeIntake(db){
 
  await asAuth(db,SUBMITTER);
  assert.deepEqual((await query(db,'select public.single_judge_access($1) as value',[W]))[0].value,{mode:'single-judge',role:'submitter'});
+ await rejectCode(()=>insertRow(rows[1]),'42501'); // The object must already exist.
+ const wrongOwner={...rows[1],id:crypto.randomUUID()};
+ const wrongBucket={...rows[1],id:crypto.randomUUID()};
+ const missingMetadata={...rows[1],id:crypto.randomUUID()};
+ await resetRole(db);
+ await addOriginal(wrongOwner,OTHER);
+ await addObject(path(wrongBucket),SUBMITTER,{size:wrongBucket.size_bytes,mimetype:wrongBucket.content_type},'other-bucket');
+ await addObject(path(missingMetadata),SUBMITTER);
+ await asAuth(db,SUBMITTER);
+ for(const row of [wrongOwner,wrongBucket,missingMetadata])await rejectCode(()=>insertRow(row),'42501');
+ await addOriginal(rows[1]);
+ await rejectCode(()=>insertRow({...rows[1],size_bytes:1235}),'42501');
+ await rejectCode(()=>insertRow({...rows[1],content_type:'application/vnd.ms-powerpoint'}),'42501');
+ for(const [name,value] of Object.entries({attempts:1,lease_owner:'no',lease_token:crypto.randomUUID(),lease_expires_at:'2100-01-01',deck_id:'no',error:'no',created_at:'2100-01-01',updated_at:'2100-01-01'})){
+  const row=rows[1];
+  await rejectCode(()=>query(db,
+   'insert into public.single_judge_intake(id,workspace_id,submitted_by,title,original_name,object_path,content_type,size_bytes,sha256,ai_allowed,'+name+') values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
+   [row.id,W,SUBMITTER,row.title,row.original_name,path(row),row.content_type,row.size_bytes,row.sha256,row.ai_allowed,value]),'42501');
+ }
  await insertRow(rows[1]);
- await addObject(path(rows[1]),SUBMITTER);
  assert.equal((await deleteObject(path(rows[1]))).length,0); // Registered originals are never cleanup targets.
  assert.equal(await visibleObjectCount(SUBMITTER,path(rows[1])),0);
  assert.equal(await visibleObjectCount(JUDGE,path(rows[1])),1);
@@ -94,13 +113,13 @@ async function verifySingleJudgeIntake(db){
  await rejectCode(()=>query(db,`insert into public.single_judge_intake(id,workspace_id,submitted_by,title,original_name,object_path,content_type,size_bytes,sha256,ai_allowed)
   values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,[mismatched.id,W,SUBMITTER,mismatched.title,mismatched.original_name,`${W}/intake/${crypto.randomUUID()}/${mismatched.original_name}`,'application/pdf',100,'d'.repeat(64),true]),'42501');
  await rejectCode(()=>query(db,`insert into public.single_judge_intake(id,workspace_id,submitted_by,title,original_name,object_path,content_type,size_bytes,sha256,ai_allowed)
-  values($1,$2,$3,'Bad MIME','bad.pdf',$4,'text/plain',100,$5,true)`,[invalid,W,SUBMITTER,`${W}/intake/${invalid}/bad.pdf`,'e'.repeat(64)]),'23514');
+  values($1,$2,$3,'Bad MIME','bad.pdf',$4,'text/plain',100,$5,true)`,[invalid,W,SUBMITTER,`${W}/intake/${invalid}/bad.pdf`,'e'.repeat(64)]),'42501');
  await rejectCode(()=>query(db,`insert into public.single_judge_intake(id,workspace_id,submitted_by,title,original_name,object_path,content_type,size_bytes,sha256,ai_allowed)
   values($1,$2,$3,'Bad file type','bad.exe',$4,'application/pdf',100,$5,true)`,[invalid,W,SUBMITTER,`${W}/intake/${invalid}/bad.exe`,'f'.repeat(64)]),'42501');
 
  await asAuth(db,OTHER);
+ await addOriginal(rows[2]);
  await insertRow(rows[2]);
- await addObject(path(rows[2]),OTHER);
 
  const legalOrphanId=crypto.randomUUID();
  const legalOrphan=`${W}/intake/${legalOrphanId}/legal-orphan.pdf`;
@@ -179,7 +198,7 @@ async function verifySingleJudgeIntake(db){
  await asAuth(db,JUDGE);
  assert.equal((await query(db,'select public.single_judge_intake_claim($1,$2,$3) as value',[W,'intake-test',1800]))[0].value.task,null);
 
- await asAuth(db,SUBMITTER); await insertRow(rows[3]); await addObject(path(rows[3]),SUBMITTER);
+ await asAuth(db,SUBMITTER); await addOriginal(rows[3]); await insertRow(rows[3]);
  await asAuth(db,JUDGE);
  const retry1=(await query(db,'select public.single_judge_intake_claim($1,$2,$3) as value',[W,'intake-retry',60]))[0].value;
  assert.equal(retry1.task.id,intake3);
@@ -246,7 +265,7 @@ async function main(){
    create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
    create function auth.jwt() returns jsonb language sql stable as $$ select jsonb_build_object('email',current_setting('request.jwt.claim.email',true)) $$;
    create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint);
-   create table storage.objects(id uuid primary key,name text not null,bucket_id text not null,owner_id text,unique(bucket_id,name));
+   create table storage.objects(id uuid primary key,name text not null,bucket_id text not null,owner_id text,metadata jsonb,unique(bucket_id,name));
    alter table storage.objects enable row level security;
    create function storage.foldername(text) returns text[] language sql as $$ select string_to_array($1,'/') $$;
   `);

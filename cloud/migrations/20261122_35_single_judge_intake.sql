@@ -34,7 +34,10 @@ create table public.single_judge_intake (
 );
 alter table public.single_judge_intake enable row level security;
 revoke all on public.single_judge_intake from public,anon,authenticated,service_role;
-grant insert,select on public.single_judge_intake to authenticated;
+grant select on public.single_judge_intake to authenticated;
+-- Only receipt fields are writable on insert; processing state belongs to the worker.
+grant insert (id,workspace_id,submitted_by,title,original_name,object_path,content_type,size_bytes,sha256,ai_allowed,status)
+ on public.single_judge_intake to authenticated;
 
 create function guanye_internal.single_judge_intake_storage_allowed(p_name text)
 returns boolean language plpgsql stable security definer set search_path='' as $$
@@ -51,23 +54,30 @@ end $$;
 revoke all on function guanye_internal.single_judge_intake_storage_allowed(text) from public,anon,authenticated;
 grant execute on function guanye_internal.single_judge_intake_storage_allowed(text) to authenticated;
 
-create function public.single_judge_intake_insert_allowed(w uuid,p_id uuid,p_name text)
+create function public.single_judge_intake_insert_allowed(w uuid,p_id uuid,p_name text,p_size bigint,p_content_type text)
 returns boolean language plpgsql stable security definer set search_path='' as $$
-declare expected text;
+declare expected text; actor uuid=auth.uid();
 begin
- if p_id is null or p_name is null then return false; end if;
+ -- SINGLE_JUDGE_INTAKE_VERIFY_OBJECT_M35
+ if actor is null or w is null or p_id is null or p_name is null
+   or p_size is null or p_content_type is null then return false; end if;
  expected=w::text||'/intake/'||p_id::text||'/'||p_name;
- return guanye_internal.single_judge_intake_storage_allowed(expected);
+ if guanye_internal.single_judge_intake_storage_allowed(expected) is not true then return false; end if;
+ -- Supabase Storage supplies metadata; the worker independently verifies the bytes and SHA-256.
+ return exists(select 1 from storage.objects o
+   where o.bucket_id='ppt-library' and o.name=expected and o.owner_id::text=actor::text
+     and o.metadata->>'size'=p_size::text
+     and o.metadata->>'mimetype'=p_content_type);
 end $$;
-revoke all on function public.single_judge_intake_insert_allowed(uuid,uuid,text) from public,anon,authenticated,service_role;
-grant execute on function public.single_judge_intake_insert_allowed(uuid,uuid,text) to authenticated;
+revoke all on function public.single_judge_intake_insert_allowed(uuid,uuid,text,bigint,text) from public,anon,authenticated,service_role;
+grant execute on function public.single_judge_intake_insert_allowed(uuid,uuid,text,bigint,text) to authenticated;
 
 create policy single_judge_intake_insert on public.single_judge_intake
  for insert to authenticated
  with check (
   submitted_by=auth.uid() and status='queued' and ai_allowed is not null
   and object_path=workspace_id::text||'/intake/'||id::text||'/'||original_name
-  and public.single_judge_intake_insert_allowed(workspace_id,id,original_name)
+  and public.single_judge_intake_insert_allowed(workspace_id,id,original_name,size_bytes,content_type)
  );
 
 create policy single_judge_intake_select_own on public.single_judge_intake

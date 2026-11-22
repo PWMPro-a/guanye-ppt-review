@@ -351,7 +351,7 @@ create function auth.jwt() returns jsonb language sql stable as $$
  select jsonb_build_object('email',current_setting('request.jwt.claim.email',true))
 $$;
 create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint);
-create table storage.objects(id uuid,name text,bucket_id text,owner_id text);
+create table storage.objects(id uuid,name text,bucket_id text,owner_id text,metadata jsonb);
 alter table storage.objects enable row level security;
 create function storage.foldername(text) returns text[] language sql as $$
  select string_to_array($1,'/')

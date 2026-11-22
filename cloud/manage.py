@@ -572,7 +572,12 @@ def _existing_schema_probes(api,ref,read_only=False):
     and has_function_privilege('service_role',to_regprocedure('public.single_judge_activate_owner(uuid,uuid)'),'EXECUTE')) as m34,
  (to_regclass('public.single_judge_intake') is not null
     and exists(select 1 from pg_class where oid=to_regclass('public.single_judge_intake') and relrowsecurity)
-    and has_table_privilege('authenticated',to_regclass('public.single_judge_intake'),'INSERT')
+    and not has_table_privilege('authenticated',to_regclass('public.single_judge_intake'),'INSERT')
+    and not exists(select 1 from pg_attribute a
+      where a.attrelid=to_regclass('public.single_judge_intake') and a.attnum>0 and not a.attisdropped
+      and has_column_privilege('authenticated',a.attrelid,a.attnum,'INSERT') is distinct from
+        (a.attname in ('id','workspace_id','submitted_by','title','original_name','object_path',
+                       'content_type','size_bytes','sha256','ai_allowed','status')))
     and has_table_privilege('authenticated',to_regclass('public.single_judge_intake'),'SELECT')
     and not has_table_privilege('authenticated',to_regclass('public.single_judge_intake'),'UPDATE')
     and not has_table_privilege('authenticated',to_regclass('public.single_judge_intake'),'DELETE')
@@ -639,10 +644,11 @@ def _existing_schema_probes(api,ref,read_only=False):
     and has_function_privilege('authenticated',to_regprocedure('guanye_internal.single_judge_intake_storage_delete_allowed(text,text)'),'EXECUTE')
     and not has_function_privilege('anon',to_regprocedure('guanye_internal.single_judge_intake_storage_delete_allowed(text,text)'),'EXECUTE')
     and not has_function_privilege('service_role',to_regprocedure('guanye_internal.single_judge_intake_storage_delete_allowed(text,text)'),'EXECUTE')
-    and exists(select 1 from pg_proc p where p.oid=to_regprocedure('public.single_judge_intake_insert_allowed(uuid,uuid,text)') and p.prosecdef)
-    and has_function_privilege('authenticated',to_regprocedure('public.single_judge_intake_insert_allowed(uuid,uuid,text)'),'EXECUTE')
-    and not has_function_privilege('anon',to_regprocedure('public.single_judge_intake_insert_allowed(uuid,uuid,text)'),'EXECUTE')
-    and not has_function_privilege('service_role',to_regprocedure('public.single_judge_intake_insert_allowed(uuid,uuid,text)'),'EXECUTE')
+    and exists(select 1 from pg_proc p where p.oid=to_regprocedure('public.single_judge_intake_insert_allowed(uuid,uuid,text,bigint,text)')
+      and p.prosecdef and position('SINGLE_JUDGE_INTAKE_VERIFY_OBJECT_M35' in p.prosrc)>0)
+    and has_function_privilege('authenticated',to_regprocedure('public.single_judge_intake_insert_allowed(uuid,uuid,text,bigint,text)'),'EXECUTE')
+    and not has_function_privilege('anon',to_regprocedure('public.single_judge_intake_insert_allowed(uuid,uuid,text,bigint,text)'),'EXECUTE')
+    and not has_function_privilege('service_role',to_regprocedure('public.single_judge_intake_insert_allowed(uuid,uuid,text,bigint,text)'),'EXECUTE')
     and exists(select 1 from pg_proc p where p.oid=to_regprocedure('public.single_judge_intake_claim(uuid,text,integer)')
       and p.prosecdef and position('SINGLE_JUDGE_INTAKE_CLAIM_M35' in p.prosrc)>0
       and position('is distinct from ''judge''' in p.prosrc)>0)
