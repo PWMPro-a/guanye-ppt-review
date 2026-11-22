@@ -1,0 +1,127 @@
+name: Core tests
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: core-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: 'true'
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+  PYTHONDONTWRITEBYTECODE: '1'
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  python:
+    name: Python 3.12 tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        timeout-minutes: 10
+        run: |
+          python -m pip install --no-input \
+            "PyMuPDF==1.26.5" \
+            "Pillow==13.0.0" \
+            "requests==2.34.2" \
+            "playwright==1.65.2"
+
+      # Root unittest discovery imports the browser test modules too. Install a
+      # local Chromium so those tests use local fixtures instead of real services.
+      - name: Install Playwright Chromium
+        timeout-minutes: 10
+        run: python -m playwright install --with-deps --no-shell chromium
+
+      - name: Point GUANYE_TEST_EDGE at Playwright Chromium
+        timeout-minutes: 2
+        run: |
+          python - <<'PY' >> "$GITHUB_ENV"
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+
+          with sync_playwright() as playwright:
+              browser_path = Path(playwright.chromium.executable_path)
+          if not browser_path.is_file():
+              raise SystemExit(f"Playwright Chromium executable is missing: {browser_path}")
+          print(f"GUANYE_TEST_EDGE={browser_path}")
+          PY
+
+      - name: Run Python unittest discovery
+        timeout-minutes: 20
+        run: python -B -m unittest discover -p 'test_*.py'
+
+  node:
+    name: Node 24 SQL tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Set up Python 3.12 for Node bridge tests
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install local PGlite test dependency
+        timeout-minutes: 5
+        run: mkdir -p .test-output/sql && npm install --prefix .test-output/sql --no-audit --no-fund @electric-sql/pglite@0.5.17
+
+      - name: Run all root CJS test files
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          shopt -s nullglob
+          test_files=(test_*.cjs)
+          if (( ${#test_files[@]} == 0 )); then
+            echo "No root test_*.cjs files found" >&2
+            exit 1
+          fi
+          printf 'Running %d root CJS test files\n' "${#test_files[@]}"
+          node --test "${test_files[@]}"
+
+  edge-functions:
+    name: Edge Function TypeScript tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Run all Edge Function tests
+        timeout-minutes: 5
+        run: |
+          node --test \
+            supabase/functions/single-judge-image-worker/index.test.ts \
+            supabase/functions/single-judge-import/index.test.ts \
+            supabase/functions/single-judge-review-worker/index.test.ts

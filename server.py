@@ -466,7 +466,23 @@ def main():
     parser = argparse.ArgumentParser(description='PPT review local web application')
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--source', type=Path, default=DEFAULT_SOURCE)
+    parser.add_argument('--professional-config', type=Path, metavar='JSON')
     args = parser.parse_args()
+    if args.professional_config is not None:
+        from cloud.local_professional import ProfessionalServer, load_browser_config
+        from cloud.professional_creation import ProfessionalCreation
+        try:
+            public_config = load_browser_config(args.professional_config)
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
+        creation = ProfessionalCreation.from_local_secrets(public_config)
+        with ProfessionalServer(args.port, ROOT / 'public', public_config, creation=creation) as server:
+            print(f'Guanye Professional: http://127.0.0.1:{server.server_port}', flush=True)
+            try:
+                server.serve_forever()
+            except KeyboardInterrupt:
+                pass
+        return
     SOURCE = args.source.resolve()
     initialize()
     scan()
