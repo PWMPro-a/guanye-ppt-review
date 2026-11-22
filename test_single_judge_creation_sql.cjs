@@ -1,0 +1,331 @@
+// M30 real SQL/RLS fixture, local PGlite (no Supabase credentials).
+const {PGlite}=require('./.test-output/sql/node_modules/@electric-sql/pglite');
+const {pgcrypto}=require('./.test-output/sql/node_modules/@electric-sql/pglite/dist/contrib/pgcrypto.cjs');
+const assert=require('node:assert/strict');
+const crypto=require('node:crypto');
+const fs=require('node:fs');
+const {spawnSync}=require('node:child_process');
+
+const W='70100000-0000-4000-8000-000000000001';
+const W_LEGACY='70200000-0000-4000-8000-000000000001';
+const W_OTHER='70300000-0000-4000-8000-000000000001';
+const OWNER='70100000-0000-4000-8000-000000000003';
+const JUDGE='70100000-0000-4000-8000-000000000004';
+const OTHER='70100000-0000-4000-8000-000000000005';
+const NONMEMBER='70100000-0000-4000-8000-000000000006';
+const LEGACY_OWNER='70200000-0000-4000-8000-000000000003';
+
+const marker='-- AI_REVIEW_FOUNDATION_BODY_START';
+const schema=fs.readFileSync('cloud/schema.sql','utf8');
+const legacySchema=schema.slice(0,schema.indexOf(marker));
+assert.ok(legacySchema.length>1000,'legacy schema slice must exist');
+const migrationNames=[
+ '20261121_01_ai_review_foundation','20261121_02_ai_reviews','20261121_03_ai_planning',
+ '20261121_04_ai_generation','20261121_05_review_queue','20261121_06_generation_history',
+ '20261121_07_review_calibration','20261121_08_review_comparison','20261121_09_review_backfill',
+ '20261121_10_review_queue_listing','20261121_11_planning_history','20261121_12_library_classification',
+ '20261121_13_formal_correction','20261121_14_library_formal_scores','20261121_15_planning_original_references',
+ '20261121_16_uploaded_baseline','20261121_17_review_workspace_batch','20261121_18_review_backfill_classification',
+ '20261121_19_uploaded_source_provenance','20261121_20_uploaded_source_groups','20261121_21_uploaded_comparison_source_dedup',
+ '20261122_22_single_judge_foundation','20261122_23_single_judge_original_archive',
+ '20261122_24_single_judge_submission','20261122_25_image_workers_default',
+ '20261122_26_single_judge_score_revisions','20261122_27_single_judge_review_workspace',
+ '20261122_28_single_judge_admission','20261122_29_single_judge_generation_references',
+  '20261122_30_single_judge_creation','20261122_34_single_judge_owner_activation'
+];
+const migrations=migrationNames.map(name=>fs.readFileSync(`cloud/migrations/${name}.sql`,'utf8'));
+
+async function query(db,sql,values=[]){return (await db.query(sql,values)).rows;}
+async function resetRole(db){await db.exec('reset role');}
+async function asService(db){await resetRole(db);await db.query("select set_config('request.jwt.claim.sub','',false)");await db.exec('set role service_role');}
+async function asAuthenticated(db,userId){await resetRole(db);await query(db,"select set_config('request.jwt.claim.sub',$1,false)",[userId]);await db.exec('set role authenticated');}
+const ownerActivate=(db,id,owner)=>get(db,'single_judge_activate_owner',[id,owner]);
+async function asAnon(db){await resetRole(db);await db.exec('set role anon');}
+
+async function bootstrap(){
+ const db=new PGlite({extensions:{pgcrypto}});
+ await db.exec(`
+  create schema auth;
+  create schema storage;
+  create schema extensions;
+  create role anon;
+  create role authenticated;
+  create role service_role bypassrls;
+  create extension if not exists pgcrypto with schema extensions;
+  create table auth.users(id uuid primary key);
+  create function auth.uid() returns uuid language sql stable as $$
+   select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid
+  $$;
+  create function auth.jwt() returns jsonb language sql stable as $$
+   select jsonb_build_object('email',current_setting('request.jwt.claim.email',true))
+  $$;
+  create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint);
+  create table storage.objects(id uuid primary key,name text not null,bucket_id text not null, unique(bucket_id,name));
+  alter table storage.objects enable row level security;
+  create function storage.foldername(text) returns text[] language sql as $$
+   select string_to_array($1,'/')
+  $$;
+ `);
+ await db.exec(legacySchema);
+ await db.exec('grant usage on schema public,auth,storage,extensions to authenticated,anon,service_role; grant select,insert,update,delete on all tables in schema public,storage to authenticated,anon; grant all on all tables in schema public,storage to service_role;');
+ for(const sql of migrations)await db.exec(sql);
+ return db;
+}
+
+function uuid(){return crypto.randomUUID();}
+function previewPath(w,deck,position=1){return `${w}/${deck}/preview/${position}.png`;}
+function stylePath(w,plan,role='reference',name='style.png'){return `${w}/ai-planning/${plan}/${role}/${name}`;}
+
+async function addUser(db,id){await resetRole(db);await query(db,'insert into auth.users(id) values($1) on conflict do nothing',[id]);}
+async function addWorkspace(db,id,name){await resetRole(db);await query(db,'insert into public.workspaces(id,name,owner_email,invite_hash) values($1,$2,$3,$4)',[id,name,`${name}@example.test`,crypto.createHash('sha256').update(name).digest('hex')]);}
+async function addMember(db,w,id,role){await resetRole(db);await query(db,'insert into public.members(workspace_id,user_id,name,role) values($1,$2,$3,$4)',[w,id,`member-${id.slice(-4)}`,role]);}
+async function addStorageObject(db,path){await resetRole(db);await query(db,"insert into storage.objects(id,name,bucket_id) values($1,$2,'ppt-library')",[uuid(),path]);}
+async function addDeck(db,w,id,{kind='uploaded',allowed=true,paths=[],title=id}={}){
+ await resetRole(db);
+ const images=paths.map((path,index)=>({id:`page-${index+1}`,name:'Page',position:index+1,path,thumbPath:path}));
+ await query(db,'insert into public.decks(id,workspace_id,data,source_kind,ai_allowed) values($1,$2,$3,$4,$5)',
+  [id,w,JSON.stringify({id,title,images,origin:kind==='generated'?'generated':'import'}),kind,allowed]);
+}
+const j=JSON.stringify;
+const get=(db,fn,args=[])=>query(db,`select public.${fn}(${args.map((_,i)=>`$${i+1}`).join(',')}) as value`,args).then(rows=>rows[0].value);
+const rejects=(promise,code)=>assert.rejects(promise,error=>error.code===code);
+const save=(db,id,revision,data,w=W)=>get(db,'single_judge_planning_save',[w,id,revision,j(data)]);
+const confirm=(db,id,revision,data,w=W)=>get(db,'single_judge_planning_confirm',[w,id,revision,data===null?null:j(data)]);
+const input=(db,path,bucket='ppt-library')=>query(db,'insert into storage.objects(id,name,bucket_id) values ($1,$2,$3)',[uuid(),path,bucket]);
+const makePath=(w,plan,role,ext)=>stylePath(w,plan,role,`${uuid().replaceAll('-','')}.${ext}`);
+const source=(storagePath,role,renderedPagePaths)=>({storagePath,role,name:'source',size:100,mimeType:'application/octet-stream',sha256:'a'.repeat(64),...(renderedPagePaths?{renderedPagePaths}:{})});
+const draft=(over={})=>({schemaVersion:1,title:'策划示例',mode:'content_draft',plannerModel:'test',pageCount:1,style:{name:'corporate'},
+ pages:[{index:1,title:'Title',copy:[{kind:'body',text:'Content'}]}],references:[],sourceManifest:[],...over});
+
+async function scoredDeck(db,w,kind,allowed,bucket,label,foreignPath){
+ let deck; let current;
+ await resetRole(db);
+ for(let x=0;x<50;x++){
+  deck=`import-${uuid()}`;
+  current=(await query(db,'select guanye_internal.ai_review_source_group_bucket($1,$2,$3) b',[w,deck,kind]))[0].b;
+  if((current===0)===bucket)break;
+ }
+ assert.equal(current===0,bucket);
+ const path=foreignPath||previewPath(w,deck);
+ await addDeck(db,w,deck,{kind,allowed,paths:[path],title:label});
+ if(!foreignPath)await addStorageObject(db,path);
+ const actor=w===W?OWNER:LEGACY_OWNER;
+ await db.transaction(async tx=>{
+  // Historical fixture rows may predate the formal generated-score gate.
+  await tx.exec("select set_config('guanye.ai_review_internal','on',true)");
+  await query(tx,'insert into public.reviews(workspace_id,deck_id,user_id,data) values($1,$2,$3,$4)',[w,deck,actor,j({mode:'deck',scores:{design:5}})]);
+ });
+ return {deck,path};
+}
+
+(async()=>{
+ const db=await bootstrap();
+ try{
+  for(const id of [OWNER,JUDGE,OTHER,NONMEMBER,LEGACY_OWNER])await addUser(db,id);
+  for(const [w,n] of [[W,'m30-active'],[W_LEGACY,'m30-legacy'],[W_OTHER,'m30-other']]){
+   await addWorkspace(db,w,n);
+   await query(db,"update public.workspaces set settings='{\"dimensions\":[{\"id\":\"design\"}]}' where id=$1",[w]);
+  }
+  await addMember(db,W,OWNER,'admin'); await addMember(db,W,JUDGE,'reviewer'); await addMember(db,W,OTHER,'admin');
+  await addMember(db,W_LEGACY,LEGACY_OWNER,'admin'); await addMember(db,W_OTHER,LEGACY_OWNER,'reviewer');
+  await addMember(db,W_OTHER,OWNER,'admin');
+  await asService(db);
+  await ownerActivate(db,W,OWNER); await ownerActivate(db,W_OTHER,LEGACY_OWNER);
+  const creationFunctions=await query(db,`select p.proname,p.prosecdef,p.proconfig,
+   has_function_privilege('authenticated',p.oid,'EXECUTE') as jwt,
+   has_function_privilege('anon',p.oid,'EXECUTE') as anon,
+   has_function_privilege('service_role',p.oid,'EXECUTE') as service
+   from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public'
+    and (p.proname like 'single_judge_planning_%' or p.proname='single_judge_generation_create')`);
+  assert.equal(creationFunctions.length,8);
+  for(const row of creationFunctions){
+   assert.ok(row.prosecdef&&row.jwt&&!row.anon&&!row.service,row.proname);
+   assert.ok(row.proconfig.some(x=>['search_path=','search_path=""'].includes(x)),row.proname);
+  }
+  const plan=uuid(), otherPlan=uuid(), legacyPlan=uuid();
+  await asService(db);
+  await get(db,'ai_planning_save_draft',[W,otherPlan,OTHER,0,j(draft())]);
+  await get(db,'ai_planning_save_draft',[W_LEGACY,legacyPlan,LEGACY_OWNER,0,j(draft())]);
+
+  const legal=await scoredDeck(db,W,'uploaded',true,false,'authorized');
+  const manual=await scoredDeck(db,W,'uploaded',false,false,'manual');
+  const holdout=await scoredDeck(db,W,'uploaded',true,true,'holdout');
+  const generated=await scoredDeck(db,W,'generated',true,false,'generated');
+  const foreign=await scoredDeck(db,W_OTHER,'uploaded',true,false,'foreign');
+  const cross=await scoredDeck(db,W,'uploaded',true,false,'bad path',foreign.path);
+  const refPath=makePath(W,plan,'reference','webp');
+  const styleDoc=makePath(W,plan,'style','pptx');
+  const rendered=makePath(W,plan,'style-rendered','png');
+  const content=makePath(W,plan,'content','md');
+  const refs=[{deckId:legal.deck,imagePaths:[legal.path],title:'caller supplied, not authoritative'}];
+  const initial=draft({references:refs,sourceManifest:[source(content,'content'),source(refPath,'reference'),source(styleDoc,'style',[rendered])],
+   generationStyleImages:[refPath,rendered],pages:[{...draft().pages[0],index:9,styleReferenceDeckIds:[legal.deck,manual.deck]}]});
+
+  await asAnon(db);
+  await rejects(get(db,'single_judge_planning_references',[W,20]),'42501');
+  await rejects(input(db,refPath),'42501');
+  await asService(db);
+  await rejects(get(db,'single_judge_planning_references',[W,20]),'42501');
+  for(const actor of [JUDGE,OTHER,NONMEMBER]){
+   await asAuthenticated(db,actor);
+   for(const [fn,args] of [
+    ['single_judge_planning_references',[W,10]],['single_judge_planning_save',[W,plan,0,j(draft())]],
+    ['single_judge_planning_get',[W,otherPlan]],['single_judge_planning_history',[W,null,10]],
+    ['single_judge_planning_confirm',[W,otherPlan,1,j(draft())]],['single_judge_planning_confirmed',[W,otherPlan]],
+    ['ai_planning_get_plan',[W,otherPlan]],['ai_planning_list_my_plans',[W,null,10]],
+    ['ai_generation_get',[W,actor,uuid()]],['ai_generation_get_by_plan',[W,actor,plan]],
+    ['ai_generation_recent',[W,actor]],['ai_generation_retry_pages',[W,actor,uuid(),'[]']],
+    ['ai_generation_get_settings',[W,actor]],['ai_generation_set_workers',[W,actor,1]]
+   ]) await rejects(get(db,fn,args),'42501');
+   await rejects(input(db,refPath),'42501');
+  }
+  await asAuthenticated(db,OWNER);
+  for(const target of [W_LEGACY,W_OTHER])await rejects(get(db,'single_judge_planning_references',[target,20]),'42501');
+  await rejects(get(db,'single_judge_planning_get',[W,otherPlan]),'42501');
+  await rejects(get(db,'ai_planning_grant_version_access',[W,uuid(),OWNER]),'42501');
+  await rejects(save(db,otherPlan,1,draft()),'42501');
+  await rejects(confirm(db,otherPlan,1,draft()),'42501');
+  await rejects(get(db,'single_judge_planning_references',[W,21]),'22023');
+  const candidates=await get(db,'single_judge_planning_references',[W,20]);
+  assert.deepEqual(candidates.map(x=>x.deckId).sort(),[legal.deck,cross.deck].sort());
+  assert.deepEqual(candidates.find(x=>x.deckId===legal.deck).imagePaths,[legal.path]);
+  assert.deepEqual(candidates.find(x=>x.deckId===cross.deck).imagePaths,[]);
+  for(const path of [makePath(W_OTHER,plan,'reference','png'),makePath(W,otherPlan,'reference','png'),makePath(W,legacyPlan,'reference','png'),
+   makePath(W,plan,'style','png'),makePath(W,plan,'style-rendered','webp'),makePath(W,plan,'content','png'),
+   makePath(W,plan,'reference','pdf'),makePath(W,plan,'original','pdf'),refPath.replace('/reference/','/reference/../'),
+   refPath.replace(plan,'not-a-uuid'),refPath.replace('ai-planning','other'),`${W}/unrelated/file.png`]) await rejects(input(db,path),'42501');
+  await rejects(input(db,refPath,'other-bucket'),'42501');
+  for(const path of [refPath,styleDoc,rendered,content])await input(db,path);
+  await rejects(input(db,refPath),'42501');
+  await rejects(query(db,`insert into storage.objects(id,name,bucket_id) values($1,$2,'ppt-library')
+   on conflict(bucket_id,name) do update set id=excluded.id`,[uuid(),refPath]),'42501');
+  assert.deepEqual(await query(db,'update storage.objects set name=$1 where name=$2 returning id',[refPath+'-changed',refPath]),[]);
+  assert.deepEqual(await query(db,'delete from storage.objects where name=$1 returning id',[refPath]),[]);
+  for(const deckId of [manual.deck,holdout.deck,generated.deck,foreign.deck])await rejects(save(db,plan,0,draft({references:[{deckId}]})),'22023');
+  await rejects(save(db,plan,0,draft({references:[{deckId:legal.deck,imagePaths:[manual.path]}]})),'22023');
+  await rejects(save(db,plan,0,draft({sourceManifest:[source(legal.path,'reference')]})),'22023');
+  await rejects(save(db,plan,0,draft({sourceManifest:[source(refPath,'content')]})),'22023');
+  await rejects(save(db,plan,0,draft({sourceManifest:[source(makePath(W,plan,'reference','webp'),'reference')]})),'22023');
+  await rejects(save(db,plan,0,draft({generationStyleImages:[refPath]})),'22023');
+  await rejects(save(db,plan,0,{...draft(),actor:OWNER}),'22023');
+  const created=await save(db,plan,0,initial);
+  assert.equal(created.revision,1);
+  assert.equal(created.draft.references[0].title,'authorized');
+  assert.deepEqual(created.draft.pages[0].styleReferenceDeckIds,[legal.deck]);
+  assert.equal(created.draft.pages[0].index,1);
+  await input(db,makePath(W,plan,'reference','jpg'));
+  await rejects(get(db,'single_judge_planning_confirmed',[W,plan]),'42501');
+  const tamper={...created.draft,title:'Changed',references:[{deckId:foreign.deck}],sourceManifest:[],generationStyleImages:[foreign.path],plannerModel:'pretender'};
+  const edited=await save(db,plan,1,tamper);
+  assert.equal(edited.revision,2);
+  for(const key of ['references','sourceManifest','generationStyleImages','plannerModel'])assert.deepEqual(edited.draft[key],created.draft[key]);
+  await rejects(save(db,plan,1,initial),'22023');
+  const newer=uuid(); await save(db,newer,0,draft());
+  await rejects(save(db,plan,2,draft({mode:'template_sample'})),'22023');
+  const history=await get(db,'single_judge_planning_history',[W,null,1]);
+  assert.equal(history.items[0].planId,newer); assert.equal(history.nextCursor,newer);
+  const second=await get(db,'single_judge_planning_history',[W,history.nextCursor,1]);
+  assert.equal(second.items[0].planId,plan); assert.equal(second.nextCursor,null);
+  await assert.rejects(get(db,'single_judge_planning_history',[W,otherPlan,10]),/游标/);
+  await rejects(get(db,'single_judge_planning_get',[W_OTHER,plan]),'42501');
+
+  await rejects(confirm(db,plan,1,tamper),'22023');
+  const confirmed=await confirm(db,plan,2,tamper);
+  assert.equal(confirmed.immutable,true);
+  const fetched=await get(db,'single_judge_planning_get',[W,plan]);
+  assert.equal(fetched.createdBy,OWNER); assert.equal(fetched.status,'confirmed');
+  assert.equal(fetched.confirmed.payload.title,'Changed');
+  assert.equal(fetched.confirmed.payload.references[0].deckId,legal.deck);
+  const snapshot=await get(db,'single_judge_planning_confirmed',[W,plan]);
+  assert.equal(snapshot.versionId,confirmed.versionId); assert.equal(snapshot.confirmedBy,OWNER);
+  assert.deepEqual(snapshot.generationStyleImages,[refPath,rendered]);
+  await rejects(save(db,plan,2,initial),'22023');
+  await rejects(confirm(db,plan,2,null),'22023');
+  await rejects(input(db,makePath(W,plan,'reference','png')),'42501');
+  await resetRole(db);
+  await assert.rejects(query(db,"update public.ai_planning_versions set payload='{}' where id=$1",[confirmed.versionId]),/不可修改/);
+
+  const deckId=`generated-${uuid().replaceAll('-','').slice(0,24)}`;
+  const page={planPageId:'page-0001',position:1,title:'Title',references:[legal.deck],contentType:'image/png',
+   outline:{index:1,title:'Title',styleReferenceDeckIds:[legal.deck]},description:{text:'Content'},prompt:'Content'};
+  const create=(over={})=>get(db,'single_judge_generation_create',[
+   over.w||W,over.plan||plan,over.deck||deckId,j(over.snapshot||snapshot),snapshot.title,'corporate',
+   j(over.outline||{title:snapshot.title,sourceManifest:snapshot.sourceManifest,pages:[page.outline]}),
+   j(over.references||snapshot.references),j(over.pages||[page])]);
+  for(const actor of [JUDGE,OTHER,NONMEMBER]){
+   await asAuthenticated(db,actor); await rejects(create(),'42501');
+  }
+  await asAuthenticated(db,OWNER);
+  await rejects(create({plan:newer}),'42501');
+  await rejects(create({w:W_OTHER}),'42501');
+  await rejects(create({deck:'generated-../../other'}),'22023');
+  await rejects(create({snapshot:{...snapshot,title:'unconfirmed'}}),'22023');
+  await rejects(create({references:[{...snapshot.references[0],imagePaths:[foreign.path]}]}),'22023');
+  await rejects(create({pages:[{...page,references:[manual.deck]}]}),'22023');
+  await rejects(create({outline:{sourceManifest:[source(foreign.path,'reference')]}}),'22023');
+  await rejects(create({outline:{pages:[{path:foreign.path}]}}),'22023');
+  await rejects(create({pages:[{...page,description:{text:'Content',path:foreign.path}}]}),'22023');
+  // Exercise the actual loopback generation handler's output against the SQL RPC,
+  // not just a manually constructed payload with the right keys.
+  const bridge=spawnSync(process.env.PYTHON||process.env.PYTHON_EXECUTABLE||'python',['-B','-c',`
+import json,sys
+from cloud.professional_creation import ProfessionalCreation
+from cloud.ai_gateway import HTTPResponse
+source=json.load(sys.stdin)
+snapshot=source['snapshot']
+def transport(method,url,headers,body,timeout):
+    if url.endswith('/single_judge_planning_get'):
+        data=source['authorized']
+    elif url.endswith('/single_judge_planning_confirmed'):
+        data=snapshot
+    elif url.endswith('/single_judge_generation_create'):
+        print(body.decode('ascii'))
+        data={'id':'fixture','pages':[]}
+    else:
+        raise AssertionError(url)
+    return HTTPResponse(200,{},json.dumps(data).encode())
+service=ProfessionalCreation({'url':'https://example.test','workspaceId':source['workspace'],'anonKey':'fixture'},'fixture',transport=transport)
+assert service.handle('POST','/api/ai/generation',source['judge'],'fixture',{'plan_id':snapshot['planId']},{})[0]==202
+`],{input:JSON.stringify({authorized:fetched,snapshot,workspace:W,judge:OWNER}),encoding:'utf8'});
+  assert.equal(bridge.status,0,String(bridge.stderr||bridge.error));
+  const wired=JSON.parse(bridge.stdout);
+  assert.deepEqual(wired.p_plan,snapshot);
+  assert.deepEqual(wired.p_references,snapshot.references);
+  const wiredCreate=()=>get(db,'single_judge_generation_create',[
+   wired.w,wired.p_plan_id,wired.p_deck_id,j(wired.p_plan),wired.p_title,wired.p_style,j(wired.p_outline),j(wired.p_references),j(wired.p_pages),
+  ]);
+  const job=await wiredCreate(); const duplicate=await wiredCreate();
+  assert.equal(job.id,duplicate.id); assert.equal(job.status,'queued'); assert.equal(job.pages.length,1);
+  assert.equal(job.userId,OWNER); assert.deepEqual(job.config,{workers:16});
+  assert.deepEqual(job.references,snapshot.references);
+  assert.equal((await get(db,'ai_generation_get',[W,OWNER,job.id])).id,job.id);
+  assert.equal((await get(db,'ai_generation_get_by_plan',[W,OWNER,plan])).id,job.id);
+  assert.equal((await get(db,'ai_generation_recent',[W,OWNER])).jobs[0].id,job.id);
+  await asAuthenticated(db,OTHER);
+  await rejects(get(db,'ai_generation_get',[W,OTHER,job.id]),'42501');
+  await rejects(get(db,'ai_generation_create',[W,JUDGE,plan,deckId,j(snapshot),snapshot.title,'style','{}','[]','[]','{}']),'42501');
+  await resetRole(db);
+  assert.equal((await query(db,'select public.ai_generation_select_reference_path($1,$2,$3) as path',[W,job.id,job.pages[0].id]))[0].path,refPath);
+  await query(db,"update public.ai_generation_pages set status='failed' where id=$1",[job.pages[0].id]);
+  await asAuthenticated(db,OTHER);
+  await rejects(get(db,'ai_generation_retry_pages',[W,OTHER,job.id,j([job.pages[0].id])]),'42501');
+  await asAuthenticated(db,OWNER);
+  assert.equal((await get(db,'ai_generation_retry_pages',[W,OWNER,job.id,j([job.pages[0].id])])).pages[0].status,'queued');
+  await asAuthenticated(db,LEGACY_OWNER);
+  assert.equal((await get(db,'ai_planning_get_plan',[W_LEGACY,legacyPlan])).planId,legacyPlan);
+  assert.equal((await get(db,'ai_planning_list_my_plans',[W_LEGACY,null,10])).items[0].planId,legacyPlan);
+  assert.equal((await get(db,'ai_generation_set_workers',[W_LEGACY,LEGACY_OWNER,7])).maxWorkers,7);
+  await input(db,`${W_LEGACY}/old-path/legacy.png`);
+  await resetRole(db);
+  await rejects(query(db,'delete from public.members where workspace_id=$1 and user_id=$2',[W,OWNER]),'23503');
+  await query(db,"update public.members set role='reviewer' where workspace_id=$1 and user_id=$2",[W,OWNER]);
+  await asAuthenticated(db,OWNER);
+  assert.equal((await get(db,'single_judge_planning_get',[W,plan])).createdBy,OWNER);
+  assert.equal((await wiredCreate()).id,job.id,'reviewer owner can still enter generation creation');
+  await resetRole(db);
+  await query(db,"update public.members set role='admin' where workspace_id=$1 and user_id=$2",[W,OWNER]);
+  await asAuthenticated(db,OTHER);
+  await rejects(input(db,makePath(W,uuid(),'content','pdf')),'42501');
+  console.log('PASS M30: admin/reviewer owner parity, non-owner guards, legacy path, insert-only RLS, M24/M29 references and generation queue');
+ } finally{await db.close();}
+})().catch(error=>{console.error(error);process.exitCode=1;});
