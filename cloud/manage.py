@@ -430,7 +430,9 @@ def _existing_schema_probes(api,ref,read_only=False):
    and exists(select 1 from pg_proc p where p.oid=to_regprocedure('public.ai_review_comparison(uuid)')
     and position('SOURCE_GROUP_ROUTING_V20' in p.prosrc)>0 and not p.prosecdef)
    and exists(select 1 from pg_proc p where p.oid=to_regprocedure('public.ai_planning_reference_candidates(uuid,integer)')
-    and position('SOURCE_GROUP_ROUTING_V20' in p.prosrc)>0)
+    and position('ai_review_source_group_bucket' in p.prosrc)>0
+    and (position('SOURCE_GROUP_ROUTING_V20' in p.prosrc)>0
+      or position('SINGLE_JUDGE_AI_ONLY_PLANNING_M24' in p.prosrc)>0))
    and exists(select 1 from pg_proc p where p.oid=to_regprocedure('public.ai_review_prepare(uuid,uuid,jsonb)')
     and position('SOURCE_GROUP_ROUTING_V20' in p.prosrc)>0)
    and has_function_privilege('service_role',to_regprocedure('public.get_ai_review_sample_snapshot(uuid)'),'EXECUTE')

@@ -192,7 +192,7 @@ class IntakeWorkerTests(unittest.TestCase):
         self.assertEqual(headers["apikey"], CONFIG["anonKey"])
         self.assertEqual(headers["Authorization"], "Bearer access-secret-token")
         self.assertEqual(json.loads(body), {
-            "p_workspace_id": WORKSPACE,
+            "w": WORKSPACE,
             "p_worker": "fixture-intake",
             "p_lease_seconds": 1800,
         })
@@ -245,7 +245,7 @@ class IntakeWorkerTests(unittest.TestCase):
         self.assertEqual(base64.b64decode(value["file"]["data"]), PDF)
         self.assertEqual(len(cloud.complete_calls), 1)
         self.assertEqual(cloud.complete_calls[0], {
-            "p_workspace_id": WORKSPACE,
+            "w": WORKSPACE,
             "p_id": TASK_ID,
             "p_lease": LEASE,
             "p_deck_id": DECK_ID,
@@ -258,6 +258,7 @@ class IntakeWorkerTests(unittest.TestCase):
         self.assertEqual(worker.run(threading.Event(), once=True), 1)
         self.assertEqual(cloud.complete_calls, [])
         self.assertEqual(len(cloud.fail_calls), 1)
+        self.assertEqual(cloud.fail_calls[0]["w"], WORKSPACE)
         self.assertEqual(cloud.fail_calls[0]["p_id"], TASK_ID)
         self.assertIn("本机无法转换该文件", cloud.fail_calls[0]["p_error"])
         self.assertNotIn("access-secret-token", cloud.fail_calls[0]["p_error"])

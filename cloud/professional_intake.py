@@ -282,7 +282,7 @@ class ProfessionalIntakeWorker:
 
     def claim(self) -> IntakeTask | None:
         response = self._request("POST", CLAIM_RPC, {
-            "p_workspace_id": self.workspace_id,
+            "w": self.workspace_id,
             "p_worker": self.worker_name,
             "p_lease_seconds": self.lease_seconds,
         })
@@ -375,7 +375,7 @@ class ProfessionalIntakeWorker:
             raise IntakeCompletionError("作品编号无效")
         try:
             response = self._request("POST", COMPLETE_RPC, {
-                "p_workspace_id": self.workspace_id,
+                "w": self.workspace_id,
                 "p_id": task.id,
                 "p_lease": task.lease_token,
                 "p_deck_id": deck_id,
@@ -390,7 +390,7 @@ class ProfessionalIntakeWorker:
     def fail(self, task: IntakeTask, message: str) -> None:
         bounded = self._safe(message, "素材处理失败")
         response = self._request("POST", FAIL_RPC, {
-            "p_workspace_id": self.workspace_id,
+            "w": self.workspace_id,
             "p_id": task.id,
             "p_lease": task.lease_token,
             "p_error": bounded,
