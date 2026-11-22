@@ -3,6 +3,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      rollback_commit:
+        description: Full main commit SHA of the team frontend to restore (empty for a normal deploy)
+        required: false
+        type: string
 permissions:
   contents: read
   pages: write
@@ -12,10 +17,25 @@ concurrency:
   cancel-in-progress: false
 jobs:
   build:
-    if: ${{ vars.SUPABASE_URL != '' && vars.SUPABASE_ANON_KEY != '' && vars.WORKSPACE_ID != '' }}
+    if: ${{ github.ref == 'refs/heads/main' && vars.SUPABASE_URL != '' && vars.SUPABASE_ANON_KEY != '' && vars.WORKSPACE_ID != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Restore team frontend files from main history
+        if: ${{ inputs.rollback_commit != '' }}
+        env:
+          ROLLBACK_COMMIT: ${{ inputs.rollback_commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$ROLLBACK_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$(git cat-file -t "$ROLLBACK_COMMIT")" == commit ]]
+          git merge-base --is-ancestor "$ROLLBACK_COMMIT" HEAD
+          # Keep the current build script and workflow; recover only the public files.
+          git restore --source="$ROLLBACK_COMMIT" --staged --worktree -- public/
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -26,7 +46,13 @@ jobs:
           WORKSPACE_ID: ${{ vars.WORKSPACE_ID }}
           AI_GATEWAY_URL: ${{ vars.AI_GATEWAY_URL }}
           GUANYE_WEB_PROFESSIONAL: ${{ vars.GUANYE_WEB_PROFESSIONAL }}
-        run: python cloud/build.py
+          ROLLBACK_COMMIT: ${{ inputs.rollback_commit }}
+        shell: bash
+        run: |
+          if [[ -n "$ROLLBACK_COMMIT" ]]; then
+            unset GUANYE_WEB_PROFESSIONAL AI_GATEWAY_URL
+          fi
+          python cloud/build.py
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
