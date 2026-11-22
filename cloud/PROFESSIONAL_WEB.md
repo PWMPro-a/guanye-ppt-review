@@ -15,6 +15,12 @@
 5. 参考 cloud/Caddyfile.public-ip.example 验证公网 IP 的 TLS、IP SAN、健康检查和 API CORS。全部验收后，通过 service role 调用 professional_web_activate，再用 GUANYE_WEB_PROFESSIONAL=1 和 HTTPS AI_GATEWAY_URL 构建并部署 GitHub Pages。现有链接不变。
 6. 回退时先停正式 ECS 工作进程、恢复上一个 Pages 构建并关闭构建变量，再调用 professional_web_rollback 恢复工作区角色和并发。评分与归档记录保留。仅数据损坏时从已验证的备份恢复。
 
+正式切换前，可在候选 PR 的干净工作树运行只读预检：
+
+    python -B -m cloud.verify_professional_web_release --repository PWMPro-a/guanye-ppt-review --pr 3 --site https://pwmpro-a.github.io/guanye-ppt-review --gateway https://47.94.214.35 --rollback-artifact <artifact.tar> --rollback-sha256 <sha256> --backup-directory <备份目录>
+
+预检核对当前提交的五项 GitHub 检查、旧站构建包、迁移记录、最新异地备份的恢复记录及公网 TLS。恢复记录必须对应同一份归档。主机防火墙、真实参考图生图和生产冒烟仍需单独验收。
+
 ## 备份检查
 
 Windows 上的 `Guanye-Daily-Encrypted-Backup` 任务每天 04:00 运行。它需要备份电脑可用且当前 Windows 用户处于登录状态；关机或退出登录错过的运行在条件满足后补做。每日归档保留最近七份，本机保留切换前的独立快照，ECS 的 /var/backups/guanye-encrypted 只接收加密归档。检查本机备份目录的 daily.log 和 last-verified.json；后者仅在远端 SHA-256 一致后更新。last-restore-verification.json 记录从加密归档恢复数据库和文件的最近演练。恢复私钥单独保管，定时任务仅使用公钥加密。
