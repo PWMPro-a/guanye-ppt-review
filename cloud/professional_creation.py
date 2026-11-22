@@ -152,6 +152,13 @@ class CreationContext:
         if name in RPC:
             remote, keys = RPC[name]
             value = {"w": self.workspace_id, **{dest: params[src] for dest, src in keys.items()}}
+            if name == "ai_generation_create":
+                # The authenticated RPC accepts only text in the description.
+                # The narrative role also lives in the outline and prompt.
+                value["p_pages"] = [
+                    {**page, "description": {"text": page["description"]["text"]}}
+                    for page in value["p_pages"]
+                ]
         elif name in GENERATION_READS:
             remote = name
             value = {"p_workspace": self.workspace_id, "p_actor": self.user_id,
