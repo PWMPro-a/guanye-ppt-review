@@ -36,11 +36,11 @@ window.Cloud = (() => {
     for(let offset=0;;offset+=500){let query=client.from(table).select(columns).eq('workspace_id',config.workspaceId);for(const [key,value] of Object.entries(filters))query=query.eq(key,value);for(const column of order.split(','))query=query.order(column);const batch=await checked(query.range(offset,offset+499));rows.push(...batch);if(batch.length<500)return rows;}
   }
   const safe=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  function gate(message='',mode='login'){
+  function gate(message='',onAuthenticated){
     if(singleJudgeEnabled)return gateSingleJudge(message);
     document.querySelector('#app').innerHTML='<main class="cloud-gate"><div class="cloud-login"><div class="eyebrow">SLIDE CURATOR · TEAM EDITION</div><h1>观页<span>.</span></h1><p>独立记录每个人的判断，一起发现值得留下的设计。</p><form id="cloud-auth"><label>邮箱<input id="cloud-email" type="email" autocomplete="email" required></label><label>密码<input id="cloud-password" type="password" autocomplete="current-password" minlength="8" required></label><label>你的姓名<input id="cloud-name" maxlength="40" autocomplete="name" placeholder="加入团队时填写"></label><label>团队邀请码<input id="cloud-invitation" autocomplete="off" placeholder="首次加入团队时填写"></label><div class="cloud-auth-actions"><button class="button primary" type="submit">登录并进入</button><button class="button" type="button" id="cloud-register">注册账号</button></div><div id="cloud-auth-message" role="status">'+safe(message)+'</div></form></div></main>';
-    document.querySelector('#cloud-auth').onsubmit=e=>{e.preventDefault();authenticate(false);};
-    document.querySelector('#cloud-register').onclick=()=>authenticate(true);
+    document.querySelector('#cloud-auth').onsubmit=e=>{e.preventDefault();authenticate(false,onAuthenticated);};
+    document.querySelector('#cloud-register').onclick=()=>authenticate(true,onAuthenticated);
   }
   function gateSingleJudge(message=''){
     const app=document.querySelector('#app');if(!app)return;
@@ -80,22 +80,31 @@ window.Cloud = (() => {
       for(const button of buttons)button.disabled=false;
     }
   }
-  async function authenticate(register){
+  async function authenticate(register,onAuthenticated){
     const form=document.querySelector('#cloud-auth');if(!form.reportValidity())return;
     const msg=document.querySelector('#cloud-auth-message');
     const email=document.querySelector('#cloud-email').value.trim(),password=document.querySelector('#cloud-password').value;
     const name=document.querySelector('#cloud-name').value.trim(),invitation=document.querySelector('#cloud-invitation').value.trim();
     form.querySelectorAll('button').forEach(b=>b.disabled=true);
     try{
-      if(register){const data=await checked(client.auth.signUp({email,password,options:{emailRedirectTo:location.origin+location.pathname}}));if(!data.session){msg.textContent='注册已提交，请前往邮箱确认后再登录。';return;}}
-      else await checked(client.auth.signInWithPassword({email,password}));
-      const session=await checked(client.auth.getSession());
-      member=await checked(client.from('members').select('*').eq('workspace_id',config.workspaceId).eq('user_id',session.session.user.id).maybeSingle());
-      if(!member){if(!name||!invitation)throw new Error('首次加入团队请填写姓名和团队邀请码');await rpc('join_workspace',{display_name:name,invitation});}
-      location.reload();
+      msg.textContent=register?'正在注册…':'正在登录…';
+      const data=register?await checked(client.auth.signUp({email,password,options:{emailRedirectTo:location.origin+location.pathname}})):await checked(client.auth.signInWithPassword({email,password}));
+      if(register&&!data.session){msg.textContent='注册已提交，请前往邮箱确认后再登录。';return;}
+      if(!data.session?.user?.id)throw new Error('登录会话无效');
+      const uid=data.session.user.id;
+      const findMember=()=>checked(client.from('members').select('*').eq('workspace_id',config.workspaceId).eq('user_id',uid).maybeSingle());
+      member=await findMember();
+      if(!member){
+        if(!name||!invitation)throw new Error('首次加入团队请填写姓名和团队邀请码');
+        await rpc('join_workspace',{display_name:name,invitation});
+        member=await findMember();
+        if(!member)throw new Error('暂时无法确认团队身份，请重新连接');
+      }
+      if(onAuthenticated){msg.textContent='正在加载作品和评分…';await onAuthenticated();}
+      else location.reload();
     }catch(err){msg.textContent=err.message;}finally{form.querySelectorAll('button').forEach(b=>b.disabled=false);}
   }
-  async function ready(){
+  async function ready(onAuthenticated){
     if(!client){gate('云端客户端未加载，请刷新页面');return false;}
     if(!config.url||!config.anonKey||!config.workspaceId){gate('网站正在配置云端连接，请管理员完成部署后再使用');return false;}
     if(singleJudgeEnabled){
@@ -114,9 +123,9 @@ window.Cloud = (() => {
       }
     }
     const session=await checked(client.auth.getSession());
-    if(!session.session){gate();return false;}
+    if(!session.session){gate('',onAuthenticated);return false;}
     member=await checked(client.from('members').select('*').eq('workspace_id',config.workspaceId).eq('user_id',session.session.user.id).maybeSingle());
-    if(!member){gate('已登录，请填写姓名和团队邀请码后再次点击“登录并进入”。');return false;}
+    if(!member){gate('已登录，请填写姓名和团队邀请码后再次点击“登录并进入”。',onAuthenticated);return false;}
     return true;
   }
   const urlCache=new Map(), waiting=new Map();
@@ -176,6 +185,12 @@ async function deckRows(){if(!aiGatewayUrl){sourceKindAvailable=false;return all
         }
         throw new Error('get_review_library 返回格式无效');
       }catch(error){if(localReview||!isMissingRpc(error,'get_review_library'))throw error;}
+    }
+    if(!singleJudgeEnabled&&!aiGatewayUrl){
+      sourceKindAvailable=false;
+      const [rows,state]=await Promise.all([deckRows(),rpc('get_review_state'),refreshSummary()]);
+      visibleDeckIds=new Set(rows.map(row=>row.id||row.data?.id));
+      return {decks:rows.map(row=>row.data),state,source:'团队作品库',sourceAvailable:true};
     }
     const rows=await deckRows();visibleDeckIds=new Set(rows.map(row=>row.id||row.data?.id));const [state]=await Promise.all([rpc('get_review_state'),refreshSummary()]);
     return {decks:rows.map(row=>row.data),state,source:singleJudgeEnabled?'单评委作品库':'团队作品库',sourceAvailable:true};

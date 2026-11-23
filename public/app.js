@@ -794,9 +794,8 @@ document.addEventListener('error', e=>{if(e.target.tagName==='IMG'&&!e.target.da
 window.addEventListener('popstate',()=>{activeId=new URLSearchParams(location.hash.slice(1)).get('deck');slide=0;overview=false;render();});
 lightbox.addEventListener('close',()=>{if(activeDeck())changeSlide(slide);});
 
-async function init() {
+async function openLibrary() {
   try {
-    if(window.Cloud&&!await Cloud.ready())return;
     if(singleJudgeSubmitterMode()){
       decks=[];state={revision:0,configRevision:0,maxScore:5,dimensions:[],reviews:{}};source='专业素材投递';sourceAvailable=true;activeId=null;
       render();return;
@@ -804,6 +803,15 @@ async function init() {
     const library=await api('/api/library');decks=library.decks;state=library.state;source=library.source;sourceAvailable=library.sourceAvailable;
     activeId=new URLSearchParams(location.hash.slice(1)).get('deck');if(activeId&&!activeDeck())activeId=null;
     render();
-  }catch(err){$('#app').innerHTML='<div class="boot boot-error">'+icon('folder')+'<h2>作品库暂时没有连接</h2><p>'+esc(err.message)+'</p><p>'+(singleJudgeMode()?'请检查单评委运行时配置或稍后重试。':window.Cloud?'请检查网络连接，或联系管理员确认团队配置。':'请启动项目中的“启动评分系统.cmd”，然后刷新此页面。')+'</p><button class="button" onclick="location.reload()">重新连接</button></div>';}
+  }catch(err){showLibraryError(err);}
+}
+function showLibraryError(err){
+  $('#app').innerHTML='<div class="boot boot-error">'+icon('folder')+'<h2>作品库暂时没有连接</h2><p>'+esc(err.message)+'</p><p>'+(singleJudgeMode()?'请检查单评委运行时配置或稍后重试。':window.Cloud?'请检查网络连接，或联系管理员确认团队配置。':'请启动项目中的“启动评分系统.cmd”，然后刷新此页面。')+'</p><button class="button" onclick="location.reload()">重新连接</button></div>';
+}
+async function init(){
+  try{
+    if(window.Cloud&&!await Cloud.ready(openLibrary))return;
+    await openLibrary();
+  }catch(err){showLibraryError(err);}
 }
 init();
