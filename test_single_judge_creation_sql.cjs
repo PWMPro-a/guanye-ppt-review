@@ -159,7 +159,7 @@ async function scoredDeck(db,w,kind,allowed,bucket,label,foreignPath){
   const content=makePath(W,plan,'content','md');
   const refs=[{deckId:legal.deck,imagePaths:[legal.path],title:'caller supplied, not authoritative'}];
   const initial=draft({references:refs,sourceManifest:[source(content,'content'),source(refPath,'reference'),source(styleDoc,'style',[rendered])],
-   generationStyleImages:[refPath,rendered],pages:[{...draft().pages[0],index:9,styleReferenceDeckIds:[legal.deck,manual.deck]}]});
+   generationStyleImages:[refPath,rendered],pages:[{...draft().pages[0],index:9,narrativeRole:'argument',styleReferenceDeckIds:[legal.deck,manual.deck]}]});
 
   await asAnon(db);
   await rejects(get(db,'single_judge_planning_references',[W,20]),'42501');
@@ -291,6 +291,8 @@ assert service.handle('POST','/api/ai/generation',source['judge'],'fixture',{'pl
   const wired=JSON.parse(bridge.stdout);
   assert.deepEqual(wired.p_plan,snapshot);
   assert.deepEqual(wired.p_references,snapshot.references);
+  assert.equal(wired.p_pages[0].outline.narrativeRole,'argument');
+  assert.match(wired.p_pages[0].description.text,/叙事角色：argument/);
   const wiredCreate=()=>get(db,'single_judge_generation_create',[
    wired.w,wired.p_plan_id,wired.p_deck_id,j(wired.p_plan),wired.p_title,wired.p_style,j(wired.p_outline),j(wired.p_references),j(wired.p_pages),
   ]);

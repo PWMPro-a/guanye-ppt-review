@@ -14,16 +14,28 @@
 # - PowerShell 7 示例：$env:PUBLIC_IP = '203.0.113.10'
 # - POSIX shell 示例：export PUBLIC_IP='203.0.113.10'
 #
-# 公网 80/443 必须能直接到达本机；Caddy 会自动处理 ACME challenge。
-# 站点流量只代理到已存在的 127.0.0.1:8787，不添加额外上游或访问限制。
+# 公网 TCP 80 用于证书验证，TCP 443 用于网页 API；只向本机 8787 代理。
+# 默认 SNI 兼容不发送 SNI 的公网 IP 客户端。
+{
+ admin off
+ default_sni {$PUBLIC_IP}
+ servers {
+  protocols h1 h2
+ }
+}
 
 {$PUBLIC_IP} {
-	tls {
-		issuer acme {
-			dir https://acme-v02.api.letsencrypt.org/directory
-			profile shortlived
-		}
-	}
-
-	reverse_proxy 127.0.0.1:8787
+ tls {
+  issuer acme {
+   dir https://acme-v02.api.letsencrypt.org/directory
+   profile shortlived
+   disable_tlsalpn_challenge
+  }
+ }
+ @health path /healthz
+ respond @health "ok" 200
+ @creative path /api/ai/planning /api/ai/planning/* /api/ai/generation /api/ai/generation/*
+ reverse_proxy @creative 127.0.0.1:8787
+ @root path /
+ redir @root https://pwmpro-a.github.io/guanye-ppt-review/ 302
 }

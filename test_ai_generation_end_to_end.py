@@ -672,7 +672,10 @@ class LoopbackExeService:
                         task = owner.tasks.get(task_id)
                         if task is None or task["project_id"] != project_id:
                             return self._json(404, {"error": {"message": "task not found"}})
-                        if not task["terminal"] and time.monotonic() >= task["ready_at"]:
+                        # The first pair must overlap even on a busy runner. If the
+                        # worker serializes them, the test's task timeout will fail.
+                        first_pair_ready = not task["first_pair"] or len(owner.tasks) >= 2
+                        if not task["terminal"] and first_pair_ready and time.monotonic() >= task["ready_at"]:
                             task["terminal"] = True
                             owner.active = max(0, owner.active - 1)
                             page = owner.projects[project_id]["pages"][task["page_id"]]
@@ -799,6 +802,7 @@ class LoopbackExeService:
                             "project_id": project_id,
                             "page_id": page_id,
                             "ready_at": time.monotonic() + delay,
+                            "first_pair": len(owner.tasks) < 2,
                             "status": "RUNNING",
                             "terminal": False,
                             "fail": fail,

@@ -90,7 +90,7 @@
     injectStyle();
     const state={opts:{kind:opts.kind==='generated'?'generated':'uploaded',deckId:opts.deckId||'',singleJudge:opts.singleJudge===true||opts.singleJudge==='true'||opts.singleJudge===1,professionalReviewOnly:opts.professionalReviewOnly===true||opts.professionalReviewOnly==='true'||opts.professionalReviewOnly===1},scope:'deck',selected:new Set(),selectionDeckKey:'',drafts:{},draftRevisions:{},data:null,busy:false,message:'',error:'',formalDrafts:{},formalDirty:{},formalRevisions:{},preEvaluationStatus:undefined,preEvaluationFeedback:'',runBusy:false,backfillByKind:{},uploadFiles:[],uploadName:'',uploadBusy:false,uploadPhase:'',uploadError:'',uploadMessage:'',previewIndex:0};
     const comparisonOnly=opts.comparisonOnly===true;
-    const localProfessional=config().singleJudge===true&&config().localReview===true;
+    const localProfessional=config().singleJudge===true&&(config().localReview===true||config().webProfessional===true);
     const request=localProfessional
       ?async (path,options)=>{
         if(typeof global.GuanyeAICore?.request!=='function')throw new Error('专业评审客户端未就绪');
@@ -585,13 +585,15 @@
       const decisions=(Array.isArray(state.data?.decisions)?state.data.decisions:[])
         .map((decision,index)=>({decision,index,submission:byId.get(String(decision?.submissionId||''))}))
         .filter(item=>item.submission&&active(item.decision))
-        .sort((left,right)=>String(right.submission.row.createdAt||'').localeCompare(String(left.submission.row.createdAt||''))||left.index-right.index);
+        .sort((left,right)=>state.data?.professionalWeb?left.index-right.index:
+          String(right.submission.row.createdAt||'').localeCompare(String(left.submission.row.createdAt||''))||left.index-right.index);
       for(const {decision,submission} of decisions){
         const scores=completeCurrentDimensionScores(decision.formalScores);
         if(!scores)continue;
         const base=submission.row.entry||{};
         return {scores,entry:{scores,note:base.note||'',favorite:!!base.favorite,classificationSuggestion:base.classificationSuggestion||'',classificationCorrection:decision.classification||base.classificationCorrection||'',reasons:Array.isArray(decision.reasons)?[...decision.reasons]:Array.isArray(base.reasons)?[...base.reasons]:[],reasonOther:decision.reasonOther||base.reasonOther||''},submissionId:String(submission.row.id||''),decisionId:String(decision.decisionId||'')};
       }
+      if(state.data?.professionalWeb)return null;
       for(const submission of submissions){
         const entry=submission.entry||{},scores=completeCurrentDimensionScores(entry.scores);
         if(!scores)continue;
@@ -678,7 +680,10 @@
     function singleJudgeSubmissionPlan(){
       const pages=selectedPageUnits();
       const units=[];
-      for(const unit of [{unitId:'',position:0,key:'deck:',scope:'deck'},...pages]){
+      const whole={unitId:'',position:0,key:'deck:',scope:'deck'};
+      const targets=config().webProfessional===true?(state.scope==='page'?pages:[whole]):[whole,...pages];
+      if(!targets.length)return {ready:false,reason:'请选择至少一页',units:[]};
+      for(const unit of targets){
         const base=draftUnitFor(unit),draft=base.draft,scores=validDraftScores(draft);
         if(!scores)return {ready:false,reason:unit.scope==='deck'?'请填写整套所有评分项':'请填写第 '+unit.position+' 页所有评分项',units:[]};
         units.push({...base,unitId:unit.unitId,position:unit.position,entry:{scope:unit.scope,unitId:unit.unitId,position:unit.position,scores,note:draft.note||'',favorite:!!draft.favorite,classificationSuggestion:draft.classificationSuggestion||'',classificationCorrection:draft.classificationCorrection||'',reasons:Array.isArray(draft.reasons)?[...draft.reasons]:[],reasonOther:draft.reasonOther||''}});
@@ -1640,6 +1645,7 @@
         announceReviewStatus(revising?'改分已保存，正在刷新…':'评分已保存，正在刷新…');
         state.message=result.message||(revising?'正式人分改分已保存':'已提交人工评分');
         successMessage=state.message;
+        if(bundle&&opts.onScoreSaved)Promise.resolve().then(()=>opts.onScoreSaved()).catch(()=>{});
         const movedFocus=userMovedFocus?focusDescriptor(global.document?.activeElement):null;
         await load({
           focusRestore:movedFocus,
@@ -1806,6 +1812,10 @@
       const data=state.data;
       if(!data?.deck||!data.isJudge||state.opts.kind!=='generated'||!data.deckVersion||!data.rubricVersion)return null;
       const submissions=professionalSubmissionsFor(unitId,state.scope),decisions=submissions.flatMap(sub=>decisionsFor(sub.id).map(decision=>({sub,decision})));
+      if(data.professionalWeb){
+        const rank=new Map((data.decisions||[]).map((d,i)=>[d.decisionId,i]));
+        decisions.sort((a,b)=>rank.get(a.decision.decisionId)-rank.get(b.decision.decisionId));
+      }
       if(admissionReceipts.has(admissionUnitKey(unitId))||decisions.some(({decision})=>decision.libraryVisible===true)){
         return {status:'admitted',message:'已收入素材库 · AI 自我学习生成'};
       }
@@ -1818,7 +1828,7 @@
       if(admissionPending.has(currentDeckKey())||state.busy||pendingHumanSubmit())return {status:'pending',message:'正在更新正式评分或入库状态…'};
       if(state.error)return {status:'unavailable',message:'请先刷新正式评分，再确认入库。'};
       if(!sub.createdAt||!sub.id||!decision.decisionId||!['confirmed','corrected'].includes(decision.status)
-        ||decisions.some(row=>row.sub.id!==sub.id&&row.sub.createdAt===sub.createdAt))return {status:'unavailable',message:'无法确认唯一的最新正式评分，请刷新后重试。'};
+        ||!data.professionalWeb&&decisions.some(row=>row.sub.id!==sub.id&&row.sub.createdAt===sub.createdAt))return {status:'unavailable',message:'无法确认唯一的最新正式评分，请刷新后重试。'};
       const human=completeCurrentDimensionScores(sub.entry?.scores),formal=completeCurrentDimensionScores(decision.formalScores);
       const threshold=statsNumber(data.settings?.humanThreshold),ratio=statsNumber(decision.scoreRatio),expiry=Date.parse(decision.expiresAt||'');
       if(!human||!formal||!Object.keys(formal).every(key=>formal[key]===human[key])||threshold===null||ratio===null||!Number.isFinite(expiry)){

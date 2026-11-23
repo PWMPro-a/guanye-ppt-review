@@ -80,10 +80,11 @@ const cloudMode = () => window.Cloud?.mode || '';
 const singleJudgeMode = () => cloudMode() === 'single-judge';
 const singleJudgeRole = () => singleJudgeMode() ? String(window.Cloud?.role || '') : '';
 const singleJudgeSubmitterMode = () => singleJudgeMode() && singleJudgeRole() === 'submitter';
+const professionalAdmin = () => window.Cloud?.professionalAdminAvailable===true;
 const singleJudgeCapabilities = () => singleJudgeMode() ? (window.Cloud?.capabilities || {}) : {};
 const singleJudgeRoleLabel = () => singleJudgeRole() === 'admin' ? '评分师' : singleJudgeRole() === 'judge' ? '评分师' : singleJudgeRole() === 'submitter' ? '投递者' : '评分师';
 const professionalImportVisible = () => Boolean(singleJudgeMode() && singleJudgeCapabilities().canSubmitMaterials && window.Cloud?.localImport === true);
-const professionalCreationVisible = () => Boolean(singleJudgeMode() && ['judge','admin'].includes(singleJudgeRole()) && singleJudgeCapabilities().canUseAiWorkspace && window.Cloud?.localCreation===true && window.Cloud?.aiAvailable);
+const professionalCreationVisible = () => Boolean(singleJudgeMode() && ['judge','admin'].includes(singleJudgeRole()) && singleJudgeCapabilities().canUseAiWorkspace && window.Cloud?.professionalCreationAvailable && window.Cloud?.aiAvailable);
 const webIntakeVisible = () => Boolean(singleJudgeMode() && singleJudgeCapabilities().canSubmitMaterials && window.Cloud?.webIntakeAvailable===true);
 function singleJudgeBlocked(message = '单评委模式已停用旧写入接口') {
   toast(message, true);
@@ -247,6 +248,7 @@ function professionalReviewNav() {
   const items=[];
   if (window.Cloud?.professionalReviewAvailable) items.push('<button class="nav-item" data-action="professional-review">'+icon('star')+'<span>正式评分工作台</span></button>');
   if (['judge','admin'].includes(singleJudgeRole())&&window.Cloud?.professionalComparisonAvailable) items.push('<button class="nav-item" data-action="professional-permissions">'+icon('settings')+'<span>素材与数据</span></button>');
+  if(professionalAdmin())items.push('<button class="nav-item" data-action="professional-admin">'+icon('settings')+'<span>工作区管理</span></button>');
   return items.join('');
 }
 function professionalCreationNav() {
@@ -322,9 +324,10 @@ function card(d,team) {
   return '<article class="deck-card"><div class="card-visual"><button class="cover-button" data-open="'+d.id+'" aria-label="查看 '+esc(d.title)+'"><img '+imageAttr(d.images[0],'thumb')+' alt="'+esc(d.title)+'预览" loading="lazy"><span class="cover-open">查看整套 '+icon('arrow')+'</span></button><span class="image-count">'+icon('image')+d.images.length+' 张</span><button class="favorite-button '+(r.favorite?'selected':'')+'" data-favorite="'+d.id+'" aria-label="'+(r.favorite?'取消收藏':'收藏')+esc(d.title)+'" aria-pressed="'+!!r.favorite+'">'+icon('heart')+'</button></div><div class="card-content"><div class="card-heading"><button data-open="'+d.id+'" class="card-title">'+esc(d.title)+'</button><span class="score-badge '+(avg!=null?'rated':'')+'">'+(sourceLabel?'<span class="team-score-label score-source-label'+sourceClass+'">'+sourceLabel+'</span>':'')+(avg==null?'—':fmt(avg))+'<small>/ '+state.maxScore+'</small></span></div><div class="card-meta"><span class="card-taxonomy">'+esc(deckStyle(d))+(team?' · '+team.count+' 人已评':'')+aiBadge(d)+classificationTag(d)+'</span><span class="review-state '+(done?'done':'')+'">'+(done?icon('check'):'<i></i>')+(team?(done?'我已评':scoreValues(d.id).length?'我在评':'我待评'):statusText(d.id))+'</span></div><div class="card-filmstrip">'+d.images.slice(0,3).map((im,i)=>'<button data-open="'+d.id+'" data-slide="'+i+'" aria-label="查看第 '+(i+1)+' 张"><img '+imageAttr(im,'thumb')+' alt="" loading="lazy"></button>').join('')+'<button data-open="'+d.id+'" class="filmstrip-more" aria-label="查看全部 '+d.images.length+' 张">'+(d.images.length>3?'+'+(d.images.length-3):icon('arrow'))+'</button></div></div></article>';
 }
 function singleJudgeCard(d) {
-  const formal = formalScoreValue(d.formalScore ?? d.officialScore ?? d.reviewScore);
+  const formal = window.Cloud?.webProfessional ? formalDeckScore(Cloud.summary?.[d.id]) : formalScoreValue(d.formalScore ?? d.officialScore ?? d.reviewScore);
+  const ratedPages=window.Cloud?.webProfessional?Object.keys(Cloud.summary?.[d.id]?.formalPageScores||{}).length:0;
   const roleText = singleJudgeCapabilities().canUseOfficialReview ? '在正式评分工作台操作' : '管理员只读浏览';
-  return '<article class="deck-card"><div class="card-visual"><button class="cover-button" data-open="'+d.id+'" aria-label="查看 '+esc(d.title)+'"><img '+imageAttr(d.images[0],'thumb')+' alt="'+esc(d.title)+'预览" loading="lazy"><span class="cover-open">查看整套 '+icon('arrow')+'</span></button><span class="image-count">'+icon('image')+d.images.length+' 张</span></div><div class="card-content"><div class="card-heading"><button data-open="'+d.id+'" class="card-title">'+esc(d.title)+'</button>'+(formal!==null?'<span class="score-badge rated"><span class="team-score-label score-source-label formal">正式分</span>'+fmt(formal)+'<small>/ '+state.maxScore+'</small></span>':'')+'</div><div class="card-meta"><span class="card-taxonomy">'+esc(deckStyle(d))+aiBadge(d)+classificationTag(d)+'</span><span class="review-state">'+roleText+'</span></div><div class="card-filmstrip">'+d.images.slice(0,3).map((im,i)=>'<button data-open="'+d.id+'" data-slide="'+i+'" aria-label="查看第 '+(i+1)+' 张"><img '+imageAttr(im,'thumb')+' alt="" loading="lazy"></button>').join('')+'<button data-open="'+d.id+'" class="filmstrip-more" aria-label="查看全部 '+d.images.length+' 张">'+(d.images.length>3?'+'+(d.images.length-3):icon('arrow'))+'</button></div></div></article>';
+  return '<article class="deck-card"><div class="card-visual"><button class="cover-button" data-open="'+d.id+'" aria-label="查看 '+esc(d.title)+'"><img '+imageAttr(d.images[0],'thumb')+' alt="'+esc(d.title)+'预览" loading="lazy"><span class="cover-open">查看整套 '+icon('arrow')+'</span></button><span class="image-count">'+icon('image')+d.images.length+' 张</span></div><div class="card-content"><div class="card-heading"><button data-open="'+d.id+'" class="card-title">'+esc(d.title)+'</button>'+(formal!==null?formalScoreBadge('整套正式分',formal):ratedPages?'<span class="review-state done">已评 '+ratedPages+' 页</span>':'')+'</div><div class="card-meta"><span class="card-taxonomy">'+esc(deckStyle(d))+aiBadge(d)+classificationTag(d)+'</span><span class="review-state">'+roleText+'</span></div><div class="card-filmstrip">'+d.images.slice(0,3).map((im,i)=>'<button data-open="'+d.id+'" data-slide="'+i+'" aria-label="查看第 '+(i+1)+' 张"><img '+imageAttr(im,'thumb')+' alt="" loading="lazy"></button>').join('')+'<button data-open="'+d.id+'" class="filmstrip-more" aria-label="查看全部 '+d.images.length+' 张">'+(d.images.length>3?'+'+(d.images.length-3):icon('arrow'))+'</button></div></div></article>';
 }
 function singleJudgeGallery() {
   const list=filtered(null), categoryOptions=classificationOptions();
@@ -370,7 +373,7 @@ function singleJudgePanel(d) {
 function singleJudgeDetail() {
   const d=activeDeck();if(!d)return '<div class="empty-state">作品不存在，请返回作品库。</div>';
   slide=Math.max(0,Math.min(slide,d.images.length-1));
-  return '<div class="detail-breadcrumb"><button class="text-button" data-action="back">'+icon('left')+'返回作品库</button><span>'+esc(singleJudgeRoleLabel())+' · 只读浏览</span></div><div class="detail-heading"><div><span class="style-label">'+esc(deckStyle(d))+' <i>·</i> '+d.images.length+' 张图片'+aiBadge(d)+classificationTag(d)+'</span><h1>'+esc(d.title)+'</h1></div></div><div class="review-layout"><section class="viewer"><div class="viewer-toolbar"><div class="segmented"><button data-overview="false" class="'+(!overview?'selected':'')+'">'+icon('image')+'单图浏览</button><button data-overview="true" class="'+(overview?'selected':'')+'">'+icon('library')+'整套总览</button></div><button class="icon-button" data-action="lightbox" aria-label="放大当前图片">'+icon('expand')+'</button></div><div id="stage-container">'+stage(d)+'</div></section><div id="panel-container">'+singleJudgePanel(d)+'</div></div>';
+  return '<div class="detail-breadcrumb"><button class="text-button" data-action="back">'+icon('left')+'返回作品库</button><span>'+esc(singleJudgeRoleLabel())+' · 作品预览</span></div><div class="detail-heading"><div><span class="style-label">'+esc(deckStyle(d))+' <i>·</i> '+d.images.length+' 张图片'+aiBadge(d)+classificationTag(d)+'</span>'+formalScoreBadge('整套正式分',formalDeckScore(window.Cloud?.summary?.[d.id]),'whole-formal-score')+'<h1>'+esc(d.title)+'</h1></div><div class="detail-actions">'+(window.Cloud?.webProfessional&&d.sourceKind!=='generated'?'<button class="button" data-action="download-original">下载原档</button>':'')+(professionalAdmin()?'<button class="button" data-action="professional-archive">归档作品</button>':'')+'</div></div><div class="review-layout"><section class="viewer"><div class="viewer-toolbar"><div class="segmented"><button data-overview="false" class="'+(!overview?'selected':'')+'">'+icon('image')+'单图浏览</button><button data-overview="true" class="'+(overview?'selected':'')+'">'+icon('library')+'整套总览</button></div><button class="icon-button" data-action="lightbox" aria-label="放大当前图片">'+icon('expand')+'</button></div><div id="stage-container">'+stage(d)+'</div></section><div id="panel-container">'+singleJudgePanel(d)+'</div></div>';
 }
 function singleJudgeSubmitterPage() {
   const web=webIntakeVisible(),local=professionalImportVisible();
@@ -497,7 +500,7 @@ function showProfessionalReview(){
   if(modal.open&&modal.querySelector('[data-professional-panel="review"]'))return;
   const deck=activeDeck();
   showModal(modalHeader('正式评分工作台','上传素材与生成作品分轨评分；正式改分不改写首次盲评。')+'<div data-professional-panel="review"></div>','ga-professional-modal');
-  mountProfessionalPanel({kind:deck?.sourceKind==='generated'?'generated':'uploaded',deckId:deck?.id,onAdmissionSaved:refreshProfessionalLibrary});
+  mountProfessionalPanel({kind:deck?.sourceKind==='generated'?'generated':'uploaded',deckId:deck?.id,onAdmissionSaved:refreshProfessionalLibrary,onScoreSaved:window.Cloud?.webProfessional?refreshProfessionalLibrary:undefined});
 }
 function showProfessionalPermissions(){
   if(!['judge','admin'].includes(singleJudgeRole())||!window.Cloud?.professionalComparisonAvailable)return;
@@ -510,16 +513,48 @@ function showProfessionalComparison(button){
   button.hidden=true;
   modal.querySelector('[data-action="comparison-uploaded"]')?.focus();
 }
+async function showProfessionalAdmin(){
+  if(!professionalAdmin())return;
+  showModal(modalHeader('工作区管理','管理投递账号、评分标准和已归档作品。')+
+    '<div class="modal-actions"><button class="button" data-action="settings">评分设置</button><button class="button" data-action="professional-export">导出评分档案</button></div><div class="restore-section" id="professional-directory" aria-live="polite">正在读取…</div>','export-modal');
+  const host=$('#professional-directory');
+  try{
+    const {members,archived}=await Cloud.professionalAdmin('directory');
+    host.innerHTML='<h3>成员</h3><p>启用现有观页账号的投递权限。</p><form id="professional-member-form"><label class="field-label">登录邮箱<input class="text-input" name="email" type="email" autocomplete="off" required></label><label class="field-label">显示名称<input class="text-input" name="name" maxlength="40" required></label><button class="button" type="submit">添加成员</button></form>'+
+      '<ul>'+members.map(m=>'<li><strong>'+esc(m.name)+'</strong> · '+esc(m.email)+' · '+({admin:'管理员',judge:'评分师',submitter:'投递成员'}[m.role]||'成员')+
+      (m.role==='submitter'?' <button class="button" data-action="professional-remove-member" data-user="'+esc(m.id)+'">停用</button>':'')+'</li>').join('')+'</ul><h3>已归档作品</h3>'+
+      (archived.length?'<ul>'+archived.map(d=>'<li>'+esc(d.title)+' <button class="button" data-action="professional-restore-work" data-deck="'+esc(d.id)+'">恢复到作品库</button></li>').join('')+'</ul>':'<p>暂无归档作品。</p>');
+  }catch(error){host.textContent=error.message;}
+}
+async function professionalAdminWrite(control,action,args,onSaved){
+  if(!professionalAdmin()||control.disabled)return;
+  control.disabled=true;
+  try{await Cloud.professionalAdmin(action,args);await onSaved();}
+  catch(error){toast(error.message,true);}
+  finally{control.disabled=false;}
+}
+function confirmProfessionalArchive(){
+  const deck=activeDeck();if(!professionalAdmin()||!deck)return;
+  showModal(modalHeader('归档作品','作品将从作品库和评分队列隐藏，可在工作区管理中恢复。')+
+    '<p class="delete-description"><strong>'+esc(deck.title)+'</strong><br>图片、备注和已确认评分会保留。</p><div class="modal-footer"><button class="button" data-action="close-modal" autofocus>取消</button><button class="button primary" data-action="professional-confirm-archive" data-deck="'+esc(deck.id)+'">确认归档</button></div>');
+}
+async function exportProfessionalArchive(button){
+  if(!professionalAdmin()||button.disabled)return;
+  button.disabled=true;
+  try{const data=await Cloud.professionalAdmin('export');download('观页-评分档案-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(data,null,2),'application/json');}
+  catch(error){toast(error.message,true);}
+  finally{button.disabled=false;}
+}
 function showSettings() {
-  if(singleJudgeMode())return singleJudgeBlocked('单评委模式不修改旧评分设置');
-  const subtitle=window.Cloud?'团队成员均可修改，保存后对所有人生效。':'按你的评审习惯，建立一套自己的标准。';
-  showModal(modalHeader('评分设置',subtitle)+'<form id="settings-form"><div class="settings-scale"><div><label for="max-score">评分满分</label><p>适用于所有评分项，可输入 1–100。</p></div><div class="max-score-input"><input id="max-score" type="number" min="1" max="100" step="0.1" required value="'+state.maxScore+'"><span>分</span></div></div><div class="scale-notice">'+icon('info')+(window.Cloud?'调整满分时，全团队已有分数会按比例换算。':'调整满分时，已有分数会按比例换算。')+'</div><div class="settings-section-title"><h3>评分项</h3><span>至少 1 项，最多 12 项</span></div><div id="settings-dimensions">'+state.dimensions.map(settingsRow).join('')+'</div><button type="button" class="add-dimension" data-action="add-dimension">'+icon('plus')+'添加评分项</button><p class="settings-note">移除评分项后，已有分数会保留在记录中，但不再参与均分。</p><div class="form-error" id="settings-error" role="alert"></div><div class="modal-footer"><button type="button" class="button" data-action="close-modal">取消</button><button class="button primary" type="submit">保存设置</button></div></form>','settings-modal');
+  if(singleJudgeMode()&&!professionalAdmin())return singleJudgeBlocked('当前账号无权修改评分设置');
+  const subtitle=professionalAdmin()?'保存后使用新的评分标准。历史分数及评分人保留在导出档案中。':window.Cloud?'团队成员均可修改，保存后对所有人生效。':'按你的评审习惯，建立一套自己的标准。';
+  showModal(modalHeader('评分设置',subtitle)+'<form id="settings-form"><div class="settings-scale"><div><label for="max-score">评分满分</label><p>适用于所有评分项，可输入 1–100。</p></div><div class="max-score-input"><input id="max-score" type="number" min="1" max="100" step="0.1" required value="'+state.maxScore+'"><span>分</span></div></div><div class="scale-notice">'+icon('info')+(professionalAdmin()?'评分标准变化后，旧分留在历史里，新评分按新标准填写。':window.Cloud?'调整满分时，全团队已有分数会按比例换算。':'调整满分时，已有分数会按比例换算。')+'</div><div class="settings-section-title"><h3>评分项</h3><span>至少 1 项，最多 12 项</span></div><div id="settings-dimensions">'+state.dimensions.map(settingsRow).join('')+'</div><button type="button" class="add-dimension" data-action="add-dimension">'+icon('plus')+'添加评分项</button><p class="settings-note">'+(professionalAdmin()?'仅用于新评分；原有评分不会改写。':'移除评分项后，已有分数会保留在记录中，但不再参与均分。')+'</p><div class="form-error" id="settings-error" role="alert"></div><div class="modal-footer"><button type="button" class="button" data-action="close-modal">取消</button><button class="button primary" type="submit">保存设置</button></div></form>','settings-modal');
 }
 function settingsRow(d) {
   return '<div class="settings-row" data-dim-id="'+esc(d.id)+'"><div class="settings-row-fields"><input class="dimension-name" aria-label="评分项名称" maxlength="30" required placeholder="评分项名称" value="'+esc(d.name)+'"><input class="dimension-desc" aria-label="评分项说明" maxlength="200" placeholder="评分时关注哪些细节？（可选）" value="'+esc(d.description||'')+'"></div><button type="button" class="icon-button remove-dim" aria-label="移除此评分项">'+icon('trash')+'</button></div>';
 }
 async function applySettings(e) {
-  if(singleJudgeMode())return singleJudgeBlocked('单评委模式不修改旧评分设置');
+  if(singleJudgeMode()&&!professionalAdmin())return singleJudgeBlocked('当前账号无权修改评分设置');
   e.preventDefault(); const err=$('#settings-error'); err.textContent='';
   const maximum=Number($('#max-score').value);
   const dimensions=$$('.settings-row').map(row=>({id:row.dataset.dimId,name:$('.dimension-name',row).value.trim(),description:$('.dimension-desc',row).value.trim()}));
@@ -527,6 +562,14 @@ async function applySettings(e) {
   if(dimensions.some(d=>!d.name)){err.textContent='请填写每个评分项的名称。';return;}
   if(new Set(dimensions.map(d=>d.name)).size!==dimensions.length){err.textContent='评分项名称不能重复。';return;}
   if(!Number.isFinite(maximum)||maximum<1||maximum>100){err.textContent='满分应在 1 至 100 之间。';return;}
+  if(professionalAdmin()){
+    const button=e.target.querySelector('[type="submit"]');button.disabled=true;
+    try{
+      await Cloud.professionalAdmin('settings',{p_revision:state.configRevision??0,p_max:maximum,p_dimensions:dimensions});
+      modal.close();await refreshProfessionalLibrary();toast('评分标准已更新');
+    }catch(error){if(modal.open)err.textContent=error.message;else toast('设置已保存，作品库刷新失败，请刷新页面',true);}
+    finally{button.disabled=false;}return;
+  }
   if(maximum!==state.maxScore) Object.values(state.reviews).forEach(r=>Scoring.rescale(r,state.maxScore,maximum));
   state.maxScore=maximum;state.dimensions=dimensions;queueSave();modal.close();render();
   if(await flushSave()){toast('评分标准已更新');}
@@ -725,6 +768,12 @@ document.addEventListener('click', e => {
     case 'home':e.preventDefault();activeId=null;view='all';history.pushState(null,'',location.pathname);render();window.scrollTo(0,0);break;
     case 'back':backToLibrary();break;
     case 'settings':showSettings();break;
+    case 'professional-admin':showProfessionalAdmin();break;
+    case 'professional-export':exportProfessionalArchive(button);break;
+    case 'professional-archive':confirmProfessionalArchive();break;
+    case 'professional-confirm-archive':professionalAdminWrite(button,'archive',{p_deck:button.dataset.deck,p_archive:true},async()=>{modal.close();activeId=null;history.replaceState(null,'',location.pathname);await refreshProfessionalLibrary();toast('作品已归档');});break;
+    case 'professional-restore-work':professionalAdminWrite(button,'archive',{p_deck:button.dataset.deck,p_archive:false},async()=>{await refreshProfessionalLibrary();await showProfessionalAdmin();toast('作品已恢复');});break;
+    case 'professional-remove-member':professionalAdminWrite(button,'member',{p_user:button.dataset.user,p_name:'',p_enable:false},async()=>{await showProfessionalAdmin();toast('该账号的工作区权限已停用');});break;
     case 'export':showExport();break;
     case 'import':showImport();break;
     case 'professional-review':showProfessionalReview();break;
@@ -776,7 +825,7 @@ document.addEventListener('change', e => {
   if(e.target.id==='web-intake-file'){const file=e.target.files?.[0],error=$('#web-intake-error');if(error)error.textContent='';setWebIntakeProgress(file?'已选择 '+file.name+' · '+intakeBytes(file.size):'等待选择文件',file?5:0);}
   if(e.target.id==='backup-file'&&e.target.files[0])prepareRestore(e.target.files[0]);
 });
-document.addEventListener('submit', e=>{if(e.target.id==='settings-form')applySettings(e);if(e.target.id==='import-form')submitImport(e);if(e.target.id==='professional-import-form')submitProfessionalImport(e);if(e.target.id==='web-intake-form')submitWebIntakeForm(e);});
+document.addEventListener('submit', e=>{if(e.target.id==='settings-form')applySettings(e);if(e.target.id==='professional-member-form'){e.preventDefault();const data=new FormData(e.target);professionalAdminWrite(e.target.querySelector('button'),'addMember',{p_email:String(data.get('email')||'').trim(),p_name:String(data.get('name')||'').trim()},async()=>{await showProfessionalAdmin();toast('成员已启用');});}if(e.target.id==='import-form')submitImport(e);if(e.target.id==='professional-import-form')submitProfessionalImport(e);if(e.target.id==='web-intake-form')submitWebIntakeForm(e);});
 document.addEventListener('keydown', e=>{
   if(['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)||modal.open)return;
   if(e.key==='/'&&!activeId){e.preventDefault();$('#search').focus();}

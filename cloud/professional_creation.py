@@ -1,7 +1,9 @@
-"""User-authorized loopback adapter for professional planning and image jobs."""
+"""User-authorized adapter for professional planning and image jobs."""
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
+from threading import BoundedSemaphore
 from urllib.parse import quote
 from uuid import UUID
 
@@ -41,18 +43,33 @@ GENERATION_READS = {
 
 
 class ProfessionalCreation:
-    def __init__(self, config, model_key, *, transport=None, chat=None):
+    def __init__(self, config, model_key, *, transport=None, chat=None, require_cutover=False):
         self.config = config
         self.workspace = config["workspaceId"]
+        self.require_cutover = require_cutover
         self.router = Router()
         ai_planning.configure(self.router)
         ai_generation.configure(self.router)
         self.transport = transport or DirectTransport(8 * 1024 * 1024, ai_generation.MAX_IMAGE_BYTES)
+        self.analyze_slot = BoundedSemaphore(1)
+        self.artifact_slots = BoundedSemaphore(2)
         self.chat = chat or Gateway(GatewayConfig(
             supabase_url=config["url"], supabase_anon_key=config["anonKey"],
             supabase_service_role_key="", workspace_id=self.workspace,
             model_api_key=model_key, model_max_concurrency=1,
         )).chat_json
+
+    @contextmanager
+    def slot(self, path):
+        lock = (self.analyze_slot if path == ANALYZE else
+                self.artifact_slots if path.endswith('/artifact') else None)
+        if lock is not None and not lock.acquire(blocking=False):
+            raise ImportErrorResponse(429, "创作任务繁忙，请稍后重试")
+        try:
+            yield
+        finally:
+            if lock is not None:
+                lock.release()
 
     @classmethod
     def from_local_secrets(cls, config):
@@ -106,6 +123,8 @@ class ProfessionalCreation:
         access = self._json(bearer, "POST", "/rest/v1/rpc/single_judge_access", value={"w": self.workspace})
         if not isinstance(access, dict) or access.get("mode") != "single-judge" or access.get("role") not in ("judge", "admin"):
             raise PermissionError("只有当前专业版评分师可以策划和生图")
+        if self.require_cutover and access.get("professionalWeb") is not True:
+            raise PermissionError("当前工作区尚未启用正式网页")
         return actor
 
     def handle(self, method, path, actor, token, body, query):
@@ -133,6 +152,13 @@ class CreationContext:
         if name in RPC:
             remote, keys = RPC[name]
             value = {"w": self.workspace_id, **{dest: params[src] for dest, src in keys.items()}}
+            if name == "ai_generation_create":
+                # The authenticated RPC accepts only text in the description.
+                # The narrative role also lives in the outline and prompt.
+                value["p_pages"] = [
+                    {**page, "description": {"text": page["description"]["text"]}}
+                    for page in value["p_pages"]
+                ]
         elif name in GENERATION_READS:
             remote = name
             value = {"p_workspace": self.workspace_id, "p_actor": self.user_id,

@@ -1,11 +1,13 @@
 # 观页部署与迁移
 
+新版公网部署见 [正式网页版操作手册](PROFESSIONAL_WEB.md)。下文为 Windows 专业版历史交付记录。
+
 ## 单评委专业版（Windows + 原 Supabase）
 
 复用原项目、原工作区和素材文件，不新建生产项目，不需要 ECS、网站域名或公网端口。
 生产切换前先对同一 Supabase 项目做只读 `migration-plan`，分别备份数据库和私有文件并演练恢复。迁移本身不会自动绑定专业版账号。
 
-> 当前状态：M35 final2 发布候选包已生成并通过最新本地/隔离验证，但原 Supabase 生产项目仍未应用 M01–M35；已验证 YLKpro 的 Management API 组织/项目列表为空，该会话已退出；当前新的 CLI 登录会话正在等待拥有目标项目/组织权限的所有者账号授权。仍不能执行 `migration-plan`、迁移或部署。在只读 `migration-plan`、数据库与私有文件备份、恢复演练、生产迁移、Edge Function 部署及真实模型/干净 Windows 全链路验收完成前，不得宣称已上线。
+> Windows 候选包交付时的状态：M35 final2 发布候选包已生成并通过最新本地/隔离验证，但原 Supabase 生产项目仍未应用 M01–M35；已验证 YLKpro 的 Management API 组织/项目列表为空，该会话已退出；当前新的 CLI 登录会话正在等待拥有目标项目/组织权限的所有者账号授权。仍不能执行 `migration-plan`、迁移或部署。在只读 `migration-plan`、数据库与私有文件备份、恢复演练、生产迁移、Edge Function 部署及真实模型/干净 Windows 全链路验收完成前，不得宣称已上线。
 
 - 产品实际只有一个 owner 账号，同时具备 `judge` 与 `admin` 能力（M34），不是两个必须分开的账号。其他已授权成员为 `submitter`，只能投递并查看本人回执，不能进入作品库、评分或 AI 工作区，也不能读取工作区内任何 Storage 对象。投递资格不意味着开放注册；兼容分支中的独立管理员仅供旧路径兼容，不是部署要求。
 - M35 新增受 RLS 保护的 `single_judge_intake` 队列表和私有 Storage 直投路径 `${workspace}/intake/${id}/${safeName}`。网页支持单份 `.ppt` / `.pptx` / `.pdf`，原件不超过 25 MiB；浏览器先计算 SHA-256，再把文件上传到私有 Storage，只有上传成功后才插入队列表。表插入失败时客户端会尝试清理刚上传的对象。

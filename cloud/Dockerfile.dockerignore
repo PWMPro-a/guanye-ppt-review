@@ -7,4 +7,13 @@ cloud/*
 !cloud/ai_planning.py
 !cloud/ai_generation.py
 !cloud/gateway-requirements.txt
+!cloud/ecs_image_provider.py
+!cloud/ecs_worker.py
+!cloud/local_professional.py
+!cloud/professional_creation.py
+!cloud/professional_image_client.py
+!cloud/professional_import.py
+!cloud/professional_intake.py
+!cloud/professional_review_worker.py
+!cloud/windows_image_worker.py
 !document_import.py
