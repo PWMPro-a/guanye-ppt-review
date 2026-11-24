@@ -277,7 +277,7 @@ def running_gateway(config=None, transport=None, modules=None):
     config = config or make_config()
     transport = transport or FakeTransport()
     gateway = ai_gateway.Gateway(config, transport=transport)
-    router = ai_gateway.build_router(modules or [TestRoutes])
+    router = ai_gateway.build_router(modules or [TestRoutes], gateway=gateway)
     server = ai_gateway.GatewayHTTPServer(("127.0.0.1", 0), gateway, router)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -387,6 +387,49 @@ class GatewayTests(unittest.TestCase):
         self.assertIn(("POST", "/api/ai/generation/worker/complete"), router.routes)
         with self.assertRaises(ai_gateway.RouteNotFound):
             router.resolve("POST", "/api/ai/echo/")
+
+    def test_training_site_rejects_legacy_generation_and_uses_user_rpc(self):
+        class TrainingTransport(FakeTransport):
+            ready = False
+            access = 'judge'
+
+            def __call__(self, method, url, headers, body, timeout):
+                path = urllib.parse.urlsplit(url).path
+                if '/rpc/single_judge_' not in path:
+                    return super().__call__(method, url, headers, body, timeout)
+                self.calls.append({'rpc': path, 'headers': dict(headers), 'body': json.loads(body)})
+                if path.endswith('_access'):
+                    return response(200, {'mode': 'single-judge', 'role': self.access})
+                if not self.ready:
+                    return response(404, {'code': 'PGRST202'})
+                return response(200, {'rubricVersion': 'cover-v1', 'rows': []})
+
+        transport = TrainingTransport()
+        config = make_config(cover_training_site=True, model_id='gpt-6.2-sol')
+        auth = {'Authorization': f'Bearer token-{USER}'}
+        inventory = '/api/ai/training/cover-inventory'
+        with running_gateway(config=config, transport=transport) as (server, _):
+            self.assertEqual(http_request(server, 'GET', inventory)[0], 401)
+            transport.access = 'submitter'
+            self.assertEqual(http_request(server, 'GET', inventory, headers=auth)[0], 403)
+            transport.access = 'judge'
+            status, _, payload = http_request(server, 'GET', inventory, headers=auth)
+            self.assertEqual(status, 404)
+            self.assertIn('数据库配置', payload['error'])
+            self.assertEqual(http_request(server, 'POST', '/api/ai/planning/analyze',
+                                          {'pageCount': 1}, auth)[0], 404)
+            self.assertEqual(http_request(server, 'POST', '/api/ai/planning/analyze',
+                                          {'pageCount': 2}, auth)[0], 400)
+            self.assertEqual(http_request(server, 'POST', '/api/ai/generation', {}, auth)[0], 405)
+            self.assertEqual(http_request(server, 'GET', inventory + '?limit=2&limit=3', headers=auth)[0], 400)
+            transport.ready = True
+            status, _, payload = http_request(server, 'GET', inventory + '?limit=8', headers=auth)
+            self.assertEqual((status, payload['rows']), (200, []))
+        self.assertEqual(transport.calls[-1]['body'], {'w': WORKSPACE, 'p_after': '', 'p_limit': 8})
+        for call in (call for call in transport.calls if 'rpc' in call):
+            self.assertEqual(call['headers']['Authorization'], auth['Authorization'])
+            self.assertEqual(call['headers']['apikey'], 'anon-public')
+        self.assertFalse(any(call.get('url', '').endswith('/chat/completions') for call in transport.calls))
 
     def test_recent_generation_uses_authenticated_rpc_and_propagates_missing_migration(self):
         class HistoryTransport(FakeTransport):
@@ -1203,6 +1246,7 @@ class GatewayTests(unittest.TestCase):
             gateway.config.workspace_id = WORKSPACE
             gateway.config.model_api_key = "model-secret"
             gateway.config.model_max_concurrency = concurrency
+            gateway.config.cover_training_site = False
             gateway.select.return_value = [{"dedicated_judge_id": ADMIN}]
             return gateway
 

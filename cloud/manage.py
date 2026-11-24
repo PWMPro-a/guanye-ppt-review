@@ -23,6 +23,11 @@ SITE='https://pwmpro-a.github.io/guanye-ppt-review/'
 PROJECT_REF_RE=re.compile(r'^[a-z0-9]{20}$')
 MIGRATION_TABLE='guanye_internal.schema_migrations'
 BASE_VERSION='0000_base_schema'
+COVER_PILOT_VERSION='20261123_38_cover_training'
+COVER_HUMAN_FIRST_VERSION='20261123_39_cover_after_human'
+COVER_PROGRESS_VERSION='20261124_40_cover_progress'
+COVER_VISUAL_VERSION='20261124_41_cover_visual_reference'
+COVER_PILOT_VERSIONS=(COVER_PILOT_VERSION,COVER_HUMAN_FIRST_VERSION,COVER_PROGRESS_VERSION,COVER_VISUAL_VERSION)
 MIGRATION_SPECS=(
     ('20261121_01_ai_review_foundation','20261121_01_ai_review_foundation.sql'),
     ('20261121_02_ai_reviews','20261121_02_ai_reviews.sql'),
@@ -59,6 +64,10 @@ MIGRATION_SPECS=(
     ('20261122_33_single_judge_review_queue','20261122_33_single_judge_review_queue.sql'),
     ('20261122_34_single_judge_owner_activation','20261122_34_single_judge_owner_activation.sql'),
     ('20261122_35_single_judge_intake','20261122_35_single_judge_intake.sql'),
+    (COVER_PILOT_VERSION,'20261123_38_cover_training.sql'),
+    (COVER_HUMAN_FIRST_VERSION,'20261123_39_cover_after_human.sql'),
+    (COVER_PROGRESS_VERSION,'20261124_40_cover_progress.sql'),
+    (COVER_VISUAL_VERSION,'20261124_41_cover_visual_reference.sql'),
 )
 HISTORY_DDL=f"""create schema if not exists guanye_internal;
 revoke all on schema guanye_internal from public, anon, authenticated;
@@ -505,7 +514,7 @@ def _existing_schema_probes(api,ref,read_only=False):
     and has_function_privilege('authenticated',to_regprocedure('public.single_judge_review_workspace(uuid,text,text)'),'EXECUTE')
     and not has_function_privilege('anon',to_regprocedure('public.single_judge_review_workspace(uuid,text,text)'),'EXECUTE')
     and not has_function_privilege('service_role',to_regprocedure('public.single_judge_review_workspace(uuid,text,text)'),'EXECUTE')) as m27,
- (exists(select 1 from pg_proc p where p.oid=to_regprocedure('public.single_judge_admit(uuid,uuid,uuid)')
+ (exists(select 1 from pg_proc p where p.oid in (to_regprocedure('public.single_judge_admit(uuid,uuid,uuid)'),to_regprocedure('public.single_judge_admit_before_cover(uuid,uuid,uuid)'))
       and p.prosecdef and position('guanye_internal.ai_review_admit' in p.prosrc)>0)
     and exists(select 1 from pg_proc p where p.oid=to_regprocedure('public.single_judge_comparison(uuid)')
       and p.prosecdef and position('single_judge_access' in p.prosrc)>0)
@@ -521,7 +530,7 @@ def _existing_schema_probes(api,ref,read_only=False):
       and tgname='single_judge_order_generated_submission' and tgenabled='O')
     and exists(select 1 from pg_trigger where tgrelid=to_regclass('public.ai_review_decisions')
       and tgname='single_judge_order_generated_decision' and tgenabled='O')) as m28,
- (exists(select 1 from pg_proc p where p.oid=to_regprocedure('public.ai_generation_select_reference_path(uuid,uuid,uuid)')
+ (exists(select 1 from pg_proc p where p.oid in (to_regprocedure('public.ai_generation_select_reference_path(uuid,uuid,uuid)'),to_regprocedure('public.ai_generation_select_reference_path_before_cover(uuid,uuid,uuid)'))
       and p.prosecdef and position('SINGLE_JUDGE_GENERATION_REFERENCES_M29' in p.prosrc)>0)
     and exists(select 1 from pg_proc p where p.oid=to_regprocedure('guanye_internal.single_judge_generation_uploaded_reference_ok(uuid,text,text)')
       and p.prosecdef and position('SINGLE_JUDGE_GENERATION_REFERENCES_M29' in p.prosrc)>0)
@@ -546,7 +555,7 @@ def _existing_schema_probes(api,ref,read_only=False):
     and exists(select 1 from pg_policy where polrelid=to_regclass('storage.objects')
       and polname='single_judge_planning_inputs_insert' and polcmd='a'
       and position('single_judge_planning_insert_allowed' in pg_get_expr(polwithcheck,polrelid))>0)
-    and exists(select 1 from pg_proc p where p.oid=to_regprocedure('public.ai_generation_retry_pages(uuid,uuid,uuid,jsonb)')
+    and exists(select 1 from pg_proc p where p.oid in (to_regprocedure('public.ai_generation_retry_pages(uuid,uuid,uuid,jsonb)'),to_regprocedure('public.ai_generation_retry_pages_before_cover(uuid,uuid,uuid,jsonb)'))
       and position('single_judge_generation_actor' in p.prosrc)>0)) as m30,
  (exists(select 1 from pg_trigger t where t.tgrelid=to_regclass('public.workspaces')
       and t.tgname='single_judge_image_capacity_after_activation' and t.tgenabled='O')
@@ -660,7 +669,27 @@ def _existing_schema_probes(api,ref,read_only=False):
       and position('is distinct from ''judge''' in p.prosrc)>0)
     and has_function_privilege('authenticated',to_regprocedure('public.single_judge_intake_fail(uuid,uuid,uuid,text)'),'EXECUTE')
     and not has_function_privilege('anon',to_regprocedure('public.single_judge_intake_fail(uuid,uuid,uuid,text)'),'EXECUTE')
-    and not has_function_privilege('service_role',to_regprocedure('public.single_judge_intake_fail(uuid,uuid,uuid,text)'),'EXECUTE')) as m35;""",read_only=read_only)
+    and not has_function_privilege('service_role',to_regprocedure('public.single_judge_intake_fail(uuid,uuid,uuid,text)'),'EXECUTE')) as m35,
+ (to_regclass('guanye_internal.cover_training_settings') is not null
+    and to_regclass('guanye_internal.cover_training_candidates') is not null
+    and to_regclass('guanye_internal.cover_training_pairs') is not null
+    and to_regclass('guanye_internal.cover_training_corrections') is not null
+    and to_regclass('guanye_internal.cover_training_plan_context') is not null
+    and exists(select 1 from pg_proc p where p.oid=to_regprocedure('public.single_judge_cover_revise(uuid,uuid,uuid,uuid,jsonb)')
+      and p.prosecdef and has_function_privilege('authenticated',p.oid,'EXECUTE')
+      and not has_function_privilege('anon',p.oid,'EXECUTE'))
+    and exists(select 1 from pg_proc p where p.oid=to_regprocedure('public.single_judge_cover_claim_pages(uuid,uuid,text,integer,integer)')
+      and p.prosecdef and has_function_privilege('service_role',p.oid,'EXECUTE')
+      and not has_function_privilege('authenticated',p.oid,'EXECUTE'))) as m36,
+ (to_regclass('guanye_internal.cover_training_after_human') is not null
+    and exists(select 1 from pg_proc p where p.oid=to_regprocedure('public.single_judge_cover_review_claim(uuid,uuid,text,integer)')
+      and p.prosecdef and has_function_privilege('service_role',p.oid,'EXECUTE')
+      and not has_function_privilege('authenticated',p.oid,'EXECUTE'))
+    and exists(select 1 from pg_trigger t where t.tgrelid=to_regclass('public.ai_review_decisions')
+      and t.tgname='cover_training_enqueue_after_human' and not t.tgisinternal)) as m37,
+ (exists(select 1 from pg_proc p where p.oid=to_regprocedure('guanye_internal.cover_training_feedback(uuid,uuid,uuid)')
+    and p.prosecdef and position('libraryVisible' in p.prosrc)>0 and position('retrying' in p.prosrc)>0
+    and not has_function_privilege('authenticated',p.oid,'EXECUTE'))) as m38;""",read_only=read_only)
 
 
 def _all_base_tables(state):
@@ -839,6 +868,8 @@ def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('command',choices=['inventory','create','status','configure','migration-plan','migrate','upload','pages'])
     parser.add_argument('--project-ref',help='Target project ref for migrate or migration-plan; omit to use an existing private-deployment.json')
+    parser.add_argument('--cover-pilot',action='store_true',help='Include the cover training migration on a separate project')
+    parser.add_argument('--production-project-ref',help='Explicit production project ref to exclude when using --cover-pilot')
     history_mode=parser.add_mutually_exclusive_group()
     history_mode.add_argument('--adopt-existing',action='store_true',help='After an operator audit, record history from key-object probes without rerunning migration SQL')
     history_mode.add_argument('--upgrade-unmanaged-base',action='store_true',help='Explicitly upgrade a base-only schema with no history by running 01 through 21')
@@ -847,6 +878,18 @@ def main():
         parser.error('history options are only valid with migrate')
     if args.project_ref and args.command not in ('migration-plan','migrate'):
         parser.error('--project-ref is only valid with migrate or migration-plan')
+    if args.cover_pilot:
+        if args.command not in ('migration-plan','migrate') or not args.project_ref or not args.production_project_ref:
+            parser.error('--cover-pilot requires migration-plan or migrate with explicit --project-ref and --production-project-ref')
+        try:
+            target=_validated_project_ref(args.project_ref)
+            production=_validated_project_ref(args.production_project_ref)
+        except RuntimeError as exc:
+            parser.error(str(exc))
+        if target==production:
+            parser.error('Cover training must use a different Supabase project from production')
+    elif args.production_project_ref:
+        parser.error('--production-project-ref is only valid with --cover-pilot')
     token=os.environ.get('SUPABASE_ACCESS_TOKEN')
     if not token:
         path=HERE/'private-token.txt'
@@ -866,19 +909,24 @@ def main():
             raise RuntimeError(f'Supabase API {exc.code}: {exc.read().decode()[:500]}') from None
     config=json.loads(PRIVATE.read_text(encoding='utf-8')) if PRIVATE.exists() else {}
     def checkpoint():PRIVATE.write_text(json.dumps(config,ensure_ascii=False,indent=2),encoding='utf-8')
+    def release_catalog():
+        return [item for item in _migration_catalog() if args.cover_pilot or item['version'] not in COVER_PILOT_VERSIONS]
     if args.command=='migration-plan':
         ref=args.project_ref or config.get('ref')
         if not ref:
             raise SystemExit('migration-plan requires --project-ref or an existing private-deployment.json with ref')
         ref=_validated_project_ref(ref)
-        print(json.dumps(_migration_plan(api,ref),ensure_ascii=False,indent=2))
+        plan=_migration_plan(api,ref,catalog=release_catalog())
+        if args.cover_pilot and plan['migration_path']['command']:
+            plan['migration_path']['command']+=f' --cover-pilot --production-project-ref {production}'
+        print(json.dumps(plan,ensure_ascii=False,indent=2))
         return
     if args.command=='migrate':
         ref=args.project_ref or config.get('ref')
         if not ref:
             raise SystemExit('migrate requires --project-ref or an existing private-deployment.json with ref')
         ref=_validated_project_ref(ref)
-        result=_migrate_database(api,ref,adopt_existing=args.adopt_existing,upgrade_unmanaged_base=args.upgrade_unmanaged_base)
+        result=_migrate_database(api,ref,catalog=release_catalog(),adopt_existing=args.adopt_existing,upgrade_unmanaged_base=args.upgrade_unmanaged_base)
         if result['adopted']:
             print('Recorded migration history from key-object probes only; this is not equivalence verification. Audit the full schema, constraints, functions and permissions first.')
         elif result['initialized_unmanaged_base']:
@@ -918,7 +966,7 @@ def main():
         workspace=HERE/'private-workspace.json'
         if not workspace.exists():subprocess.run([sys.executable,str(HERE/'prepare_workspace.py'),'--owner-email',email],cwd=ROOT,check=True)
         config['workspaceId']=json.loads(workspace.read_text())['workspaceId'];checkpoint()
-        result=_ensure_database(api,ref)
+        result=_ensure_database(api,ref,catalog=release_catalog())
         config['schemaInstalled']=True;checkpoint()
         api('/v1/projects/'+ref+'/config/auth',{'site_url':SITE,'uri_allow_list':SITE,'password_min_length':8},method='PATCH')
         keys=api('/v1/projects/'+ref+'/api-keys?reveal=true')

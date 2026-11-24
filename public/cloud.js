@@ -7,7 +7,10 @@ window.Cloud = (() => {
   const singleJudgeEnabled=config.singleJudge===true;
   const localImport=config.localImport===true;
   const localReview=singleJudgeEnabled&&config.localReview===true;
-  const localCreation=singleJudgeEnabled&&config.localCreation===true;
+  const coverTrainingSite=singleJudgeEnabled&&config.coverTrainingSite===true&&
+    location.protocol==='https:'&&aiGatewayUrl===location.origin&&location.pathname.startsWith('/training/');
+  const coverTrainingEnabled=coverTrainingSite||config.localCoverTraining===true;
+  const localCreation=singleJudgeEnabled&&(config.localCreation===true||coverTrainingSite);
   const LOCAL_CREATION_MAX_JSON_CHARS=36*1024*1024;
   const LOCAL_UUID=/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
   const WEB_INTAKE_TABLE='single_judge_intake';
@@ -414,7 +417,7 @@ async function deckRows(){if(!aiGatewayUrl){sourceKindAvailable=false;return all
   }
   function localCreationPath(path){
     const raw=String(path??'').trim();
-    return raw.includes('/api/ai/planning')||raw.includes('/api/ai/generation');
+    return raw.includes('/api/ai/planning')||raw.includes('/api/ai/generation')||raw.includes('/api/ai/training/cover-');
   }
   function localPlainObject(value){
     if(!value||typeof value!=='object'||Array.isArray(value))return false;
@@ -434,8 +437,9 @@ async function deckRows(){if(!aiGatewayUrl){sourceKindAvailable=false;return all
       ||/^[a-z][a-z0-9+.-]*:/i.test(raw)||/%2e|%2f|%5c/i.test(raw))throw new Error('本地策划与生图请求路径无效');
     let url;
     try{url=new URL(raw,location.href);}catch{throw new Error('本地策划与生图请求路径无效');}
-    if(url.protocol!=='http:'||url.hostname!=='127.0.0.1'||url.origin!==location.origin
-      ||url.username||url.password||!url.pathname.startsWith('/api/ai/'))throw new Error('本地策划与生图只允许访问同源 127.0.0.1 服务');
+    const trustedOrigin=coverTrainingSite?url.protocol==='https:':url.protocol==='http:'&&url.hostname==='127.0.0.1';
+    if(!trustedOrigin||url.origin!==location.origin||url.username||url.password||!url.pathname.startsWith('/api/ai/'))
+      throw new Error('策划与生图只允许访问当前工作台同源服务');
     const method=String(options.method||'GET').toUpperCase();
     const query=allowed=>{
       const keys=[...url.searchParams.keys()];
@@ -453,10 +457,14 @@ async function deckRows(){if(!aiGatewayUrl){sourceKindAvailable=false;return all
     let body;
     if(url.pathname==='/api/ai/planning/analyze'){
       expectMethod('POST');noQuery();
-      body=bodyFor(['mode','pageCount','outline','materials','papers','styleBrief','content_files','style_files','reference_images']);
+      const analyzeKeys=['mode','pageCount','outline','materials','papers','styleBrief','content_files','style_files','reference_images'];
+      if(options.body&&Object.prototype.hasOwnProperty.call(options.body,'reference_deck_id'))analyzeKeys.push('reference_deck_id');
+      body=bodyFor(analyzeKeys);
       if(!['content_draft','template_sample'].includes(body.mode)||!Number.isInteger(body.pageCount)||body.pageCount<1||body.pageCount>30
         ||!['outline','materials','papers','styleBrief'].every(key=>typeof body[key]==='string')
-        ||!['content_files','style_files','reference_images'].every(key=>localFiles(body[key])))throw new Error('本地策划请求参数无效');
+        ||!['content_files','style_files','reference_images'].every(key=>localFiles(body[key]))
+        ||(Object.prototype.hasOwnProperty.call(body,'reference_deck_id')
+          &&(typeof body.reference_deck_id!=='string'||!/^[A-Za-z0-9_-]{1,100}$/.test(body.reference_deck_id))))throw new Error('本地策划请求参数无效');
     }else if(url.pathname==='/api/ai/planning/history'){
       expectMethod('GET');noBody();
       const params=query(['cursor']);const cursor=params.get('cursor');
@@ -476,9 +484,10 @@ async function deckRows(){if(!aiGatewayUrl){sourceKindAvailable=false;return all
         noQuery();body=bodyFor(['plan_id']);requireUuid(body.plan_id,'策划 ID');
       }else if(method==='GET'){
         noBody();const params=query(['action','job_id','plan_id']),keys=[...params.keys()];
-        if(keys.length===1&&params.get('action')==='recent')return {url,method,signal:options.signal};
-        if(keys.length!==1||keys[0]!=='job_id'&&keys[0]!=='plan_id')throw new Error('本地生成任务请求参数无效');
-        requireUuid(params.get(keys[0]),keys[0]==='job_id'?'生成任务 ID':'策划 ID');
+        if(!(keys.length===1&&params.get('action')==='recent')){
+          if(keys.length!==1||keys[0]!=='job_id'&&keys[0]!=='plan_id')throw new Error('本地生成任务请求参数无效');
+          requireUuid(params.get(keys[0]),keys[0]==='job_id'?'生成任务 ID':'策划 ID');
+        }
       }else throw new Error('本地策划与生图请求方法无效');
     }else if(url.pathname==='/api/ai/generation/retry'){
       expectMethod('POST');noQuery();
@@ -492,7 +501,54 @@ async function deckRows(){if(!aiGatewayUrl){sourceKindAvailable=false;return all
       if([...params.keys()].sort().join(',')!==['job_id','page_id','download'].filter(key=>params.has(key)).sort().join(','))throw new Error('本地生成素材请求参数无效');
       requireUuid(params.get('job_id'),'生成任务 ID');requireUuid(params.get('page_id'),'生成页面 ID');
       if(params.has('download')&&params.get('download')!=='1')throw new Error('本地生成素材下载参数无效');
+    }else if(coverTrainingEnabled && (url.pathname==='/api/ai/generation/cover' ||
+        url.pathname.startsWith('/api/ai/generation/cover/') || url.pathname.startsWith('/api/ai/training/cover-'))){
+      const endpoint=url.pathname;
+      const deck=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(value);
+      const note=value=>typeof value==='string'&&value.length<=700;
+      if(endpoint==='/api/ai/generation/cover'){
+        expectMethod('GET');noBody();requireUuid(query(['job_id']).get('job_id'),'封面任务 ID');
+      }else if(endpoint==='/api/ai/training/cover-references'){
+        expectMethod('GET');noBody();noQuery();
+      }else if(endpoint==='/api/ai/training/cover-inventory'){
+        expectMethod('GET');noBody();const params=query(['limit','after']);
+        if(params.has('limit')&&(!/^\d{1,3}$/.test(params.get('limit'))||+params.get('limit')<1||+params.get('limit')>200)
+          ||params.get('after')&&!deck(params.get('after')))throw new Error('封面盘点分页参数无效');
+      }else{
+        expectMethod('POST');noQuery();
+        switch(endpoint){
+          case '/api/ai/generation/cover/start':
+            body=bodyFor(['plan_id','reference_deck_id','reference_path']);requireUuid(body.plan_id,'策划 ID');
+            if(!deck(body.reference_deck_id)||typeof body.reference_path!=='string'||body.reference_path.length>1024)throw new Error('封面参考无效');
+            break;
+          case '/api/ai/generation/cover/suggest':
+            body=bodyFor(['job_id','page_id','record_id']);requireUuid(body.job_id,'封面任务 ID');
+            requireUuid(body.page_id,'封面候选 ID');requireUuid(body.record_id,'AI 记录 ID');break;
+          case '/api/ai/generation/cover/revise':
+            body=bodyFor(['page_id','record_id','request_key','instructions']);
+            requireUuid(body.page_id,'封面候选 ID');requireUuid(body.record_id,'AI 记录 ID');requireUuid(body.request_key,'幂等键');
+            if(!exactObjectKeys(body.instructions,['keep','change','doNotChange'])||!Object.values(body.instructions).every(note))throw new Error('改稿约束无效');
+            break;
+          case '/api/ai/generation/cover/select':
+            body=bodyFor(['page_id','decision_id','reason','content_ok','blind']);
+            requireUuid(body.page_id,'封面候选 ID');requireUuid(body.decision_id,'正式评分 ID');
+            if(!note(body.reason)||body.content_ok!==true||typeof body.blind!=='boolean')throw new Error('选用确认参数无效');break;
+          case '/api/ai/training/cover-pair':
+            body=bodyFor(['deck_id']);if(!deck(body.deck_id))throw new Error('封面素材 ID 无效');break;
+          case '/api/ai/training/cover-correct':
+            body=bodyFor(['pair_id','reason']);requireUuid(body.pair_id,'对照记录 ID');
+            if(!note(body.reason))throw new Error('纠错原因无效');break;
+          case '/api/ai/training/cover-style':
+            if(options.body?.markdown!==undefined){
+              body=bodyFor(['markdown']);if(typeof body.markdown!=='string'||body.markdown.length>12000)throw new Error('风格文档无效');
+            }else{
+              body=bodyFor(['previous']);if(!Number.isSafeInteger(body.previous)||body.previous<1)throw new Error('风格版本无效');
+            }break;
+          default:throw new Error('当前专业版未开放此本地封面训练操作');
+        }
+      }
     }else throw new Error('当前专业版未开放此本地策划与生图操作');
+    if(coverTrainingSite)url.pathname='/training'+url.pathname;
     return {url,method,body,signal:options.signal};
   }
   async function localCreationRequest(path,options={}){
@@ -607,5 +663,5 @@ async function deckRows(){if(!aiGatewayUrl){sourceKindAvailable=false;return all
     return payload;
   }
   if(aiGatewayUrl||localReview||localCreation){const aiCore=Object.freeze({request:aiRequest,get available(){return true;},get baseUrl(){return aiGatewayUrl||(localCreation?location.origin:'');}});window.GuanyeAICore=aiCore;window.GuanyeAI=aiCore;window.GUANYE_AI_BASE=aiGatewayUrl;}
-  return {ready,request,imageUrl,fileUrl,original,refreshSummary,refreshTeam,changePassword,submitWebIntake,listMyIntakes,get summary(){return summary;},get member(){return member;},get team(){return singleJudgeEnabled?{members:[],reviews:[]}:{members,reviews:teamReviews};},get mode(){return singleJudgeEnabled?(singleJudgeAccess?.mode||null):'team';},get role(){return singleJudgeEnabled?(singleJudgeAccess?.role||null):(member?.role||null);},get access(){return singleJudgeAccess?{mode:singleJudgeAccess.mode,role:singleJudgeAccess.role}:null;},get capabilities(){return singleJudgeCapabilities();},get localImport(){return localImport;},get localCreation(){return localCreation;},get webIntakeAvailable(){return Boolean(singleJudgeEnabled&&singleJudgeAccess&&singleJudgeCapabilities()?.canSubmitMaterials&&client&&config.workspaceId);},get professionalImportAvailable(){return Boolean(singleJudgeEnabled&&singleJudgeCapabilities()?.canSubmitMaterials&&localImport);},get professionalReviewAvailable(){return Boolean(localReview&&singleJudgeCapabilities()?.canUseOfficialReview);},get professionalComparisonAvailable(){return Boolean(localReview&&singleJudgeCapabilities()?.canReadComparison);},get localCreationAvailable(){return Boolean(localCreation&&singleJudgeCapabilities()?.canUseAiWorkspace);},get aiAvailable(){return singleJudgeEnabled?Boolean(['judge','admin'].includes(singleJudgeAccess?.role)&&singleJudgeCapabilities()?.canUseAiWorkspace&&(aiGatewayUrl||localCreation)&&window.GuanyeAI):Boolean(aiGatewayUrl&&window.GuanyeAI);},get aiGatewayUrl(){return aiGatewayUrl;},async logout(){singleJudgeAccess=null;member=null;await client.auth.signOut();location.reload();}};
+  return {ready,request,imageUrl,fileUrl,original,refreshSummary,refreshTeam,changePassword,submitWebIntake,listMyIntakes,get summary(){return summary;},get member(){return member;},get team(){return singleJudgeEnabled?{members:[],reviews:[]}:{members,reviews:teamReviews};},get mode(){return singleJudgeEnabled?(singleJudgeAccess?.mode||null):'team';},get role(){return singleJudgeEnabled?(singleJudgeAccess?.role||null):(member?.role||null);},get access(){return singleJudgeAccess?{mode:singleJudgeAccess.mode,role:singleJudgeAccess.role}:null;},get capabilities(){return singleJudgeCapabilities();},get localImport(){return localImport;},get localCreation(){return localCreation;},get coverTrainingSite(){return coverTrainingSite;},get coverTrainingEnabled(){return localCreation&&coverTrainingEnabled;},get webIntakeAvailable(){return Boolean(singleJudgeEnabled&&singleJudgeAccess&&singleJudgeCapabilities()?.canSubmitMaterials&&client&&config.workspaceId);},get professionalImportAvailable(){return Boolean(singleJudgeEnabled&&singleJudgeCapabilities()?.canSubmitMaterials&&localImport);},get professionalReviewAvailable(){return Boolean(localReview&&singleJudgeCapabilities()?.canUseOfficialReview);},get professionalComparisonAvailable(){return Boolean(localReview&&singleJudgeCapabilities()?.canReadComparison);},get localCreationAvailable(){return Boolean(localCreation&&singleJudgeCapabilities()?.canUseAiWorkspace);},get aiAvailable(){return singleJudgeEnabled?Boolean(['judge','admin'].includes(singleJudgeAccess?.role)&&singleJudgeCapabilities()?.canUseAiWorkspace&&(aiGatewayUrl||localCreation)&&window.GuanyeAI):Boolean(aiGatewayUrl&&window.GuanyeAI);},get aiGatewayUrl(){return aiGatewayUrl;},async logout(){singleJudgeAccess=null;member=null;await client.auth.signOut();location.reload();}};
 })();

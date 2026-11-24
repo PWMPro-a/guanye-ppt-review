@@ -122,6 +122,11 @@
       return Object.prototype.hasOwnProperty.call(PRE_EVALUATION_LABELS,candidate)?candidate:null;
     }
     function preEvaluationText(){
+      if(state.opts.kind==='generated'&&global.Cloud?.coverTrainingSite===true){
+        if(Array.isArray(state.data?.ai)&&state.data.ai.length)return 'Sol 已完成独立评审';
+        if(Array.isArray(state.data?.submissions)&&state.data.submissions.length)return '人工分已保存，等待 Sol';
+        return '人工分后由 Sol 评审';
+      }
       return PRE_EVALUATION_LABELS[state.preEvaluationStatus]||'状态待确认';
     }
     function isPreEvaluationActive(value=state.preEvaluationStatus){
@@ -132,6 +137,9 @@
     }
     function singleJudgeMode(){
       return state.opts.singleJudge===true||state.data?.singleJudge===true;
+    }
+    function coverTrainingOnePage(){
+      return global.Cloud?.coverTrainingSite===true&&state.opts.kind==='generated'&&images().length===1;
     }
     function professionalReviewOnlyMode(){
       return singleJudgeMode()&&(state.opts.professionalReviewOnly===true||state.data?.professionalReviewOnly===true);
@@ -650,6 +658,7 @@
     function humanSubmitLabel(pending){
       if(pending)return humanSubmitButtonText(pending);
       if(professionalReviewOnlyMode()&&professionalBundleHasSavedFormal())return '保存改分';
+      if(coverTrainingOnePage())return '提交本页人工评分';
       return singleJudgeMode()?'提交整套与选页人工评分':'提交所选人工评分';
     }
     function validDraftScores(draft){
@@ -677,6 +686,16 @@
     }
     function singleJudgeSubmissionPlan(){
       const pages=selectedPageUnits();
+      if(coverTrainingOnePage()){
+        if(pages.length!==1)return {ready:false,reason:'请选择唯一封面页后评分',units:[]};
+        const unit=pages[0],base=draftUnitFor(unit),draft=base.draft,scores=validDraftScores(draft);
+        if(!scores)return {ready:false,reason:'请填写本页全部评分项',units:[]};
+        const entry={scope:'page',unitId:unit.unitId,position:unit.position,scores,note:draft.note||'',favorite:!!draft.favorite,classificationSuggestion:draft.classificationSuggestion||'',classificationCorrection:draft.classificationCorrection||'',reasons:Array.isArray(draft.reasons)?[...draft.reasons]:[],reasonOther:draft.reasonOther||''};
+        return {ready:true,units:[
+          {...base,unitId:'',position:0,entry:{...entry,scope:'deck',unitId:'',position:0}},
+          {...base,unitId:unit.unitId,position:unit.position,entry},
+        ]};
+      }
       const units=[];
       for(const unit of [{unitId:'',position:0,key:'deck:',scope:'deck'},...pages]){
         const base=draftUnitFor(unit),draft=base.draft,scores=validDraftScores(draft);
@@ -768,6 +787,13 @@
         const data=await request(AI_PATH+'?'+query.toString());
         if(destroyed||runEpoch!==workspaceEpoch)return state.data;
         state.data=data;
+        if(coverTrainingOnePage()){
+          const only=images()[0];
+          state.scope='page';
+          state.selectionDeckKey=currentDeckKey();
+          state.selected.clear();
+          if(only?.id)state.selected.add(String(only.id));
+        }
         discardCleanProfessionalDrafts();
         discardCleanFormalDrafts();
         applyWorkspaceQueues(state.data,{reset:resetQueues});
@@ -1405,19 +1431,19 @@
       const submitIntent=professional&&professionalBundleHasSavedFormal()?'revision':'initial';
       const backfill=backfillProgress();
       const kindLabel=state.opts.kind==='generated'?'生成作品':'上传素材';
-      const judgeActions=professional?(data.isJudge?'<button class="ga-btn" data-action="backfill" '+(backfill.fetching?'disabled aria-busy="true"':'')+'>'+esc(backfillButtonText(backfill))+'</button>':''):(data.isJudge?'<button class="ga-btn" data-action="prepare" '+(workspaceReady?'':'disabled')+'>预评当前粒度</button><button class="ga-btn" data-action="run" data-idle-label="推进 1 个" '+(state.runBusy?'disabled aria-busy="true"':'')+'>'+(state.runBusy?'推进中…':'推进 1 个')+'</button><button class="ga-btn" data-action="backfill" '+(backfill.fetching?'disabled aria-busy="true"':'')+'>'+esc(backfillButtonText(backfill))+'</button>':'');
+      const judgeActions=professional?(data.isJudge&&!coverTrainingOnePage()?'<button class="ga-btn" data-action="backfill" '+(backfill.fetching?'disabled aria-busy="true"':'')+'>'+esc(backfillButtonText(backfill))+'</button>':''):(data.isJudge?'<button class="ga-btn" data-action="prepare" '+(workspaceReady?'':'disabled')+'>预评当前粒度</button><button class="ga-btn" data-action="run" data-idle-label="推进 1 个" '+(state.runBusy?'disabled aria-busy="true"':'')+'>'+(state.runBusy?'推进中…':'推进 1 个')+'</button><button class="ga-btn" data-action="backfill" '+(backfill.fetching?'disabled aria-busy="true"':'')+'>'+esc(backfillButtonText(backfill))+'</button>':'');
       const importPanel=professional?'':'<div class="ga-band ga-upload-panel" data-import-panel aria-busy="'+(state.uploadBusy?'true':'false')+'"><div class="ga-head"><div><b>PPT/PPTX 转可预评作品</b><p class="ga-muted">上传 PPT/PPTX，转换完成后加入 AI 评审并进入可预评状态；普通 PDF/图片导入保持不变。</p></div><span class="ga-pill">1–10 份 · 单份 ≤ 25 MiB · 合计 ≤ 100 MiB</span></div><div class="ga-grid" style="margin-top:10px"><label class="ga-field">作品名称（可选）<input data-import-name maxlength="100" value="'+esc(state.uploadName)+'"></label><label class="ga-field">PPT/PPTX 文件<input type="file" accept=".ppt,.pptx" multiple data-import-files '+(state.uploadBusy?'disabled':'')+'></label></div><div class="ga-upload-files" data-import-summary>'+uploadSummaryHtml()+'</div><div class="ga-row" style="margin-top:10px"><button class="ga-btn primary" data-action="import" '+(state.uploadBusy?'disabled aria-busy="true"':'')+'>'+esc(uploadButtonText())+'</button><span class="ga-muted">失败时保留选择，可直接重试</span></div><div class="ga-upload-status" data-import-status role="status" aria-live="polite" aria-atomic="true"></div></div>';
       const settings=professional?'':(data.isJudge?settingsHtml():'');
       const stats=statsPanelHtml();
       const unitCards=professional&&!deck?'<div class="ga-muted" data-professional-loading>正在读取专业评分数据…</div>':units.map(([id,pos,label])=>unitCard(id,pos,label)).join('');
       view.innerHTML='<section class="ga-shell" '+(professional?'data-professional-review-only="true"':'')+'>'
-        +'<header class="ga-head"><div><h2>'+esc(professional?'专业人工评分 · '+kindLabel:'AI 盲评 · '+kindLabel)+'</h2><p class="ga-muted">'+esc(professional?(professionalManualOnly()?'仅人工素材只保存人工分，不发送给模型，也不进入 AI 参考样本。':'提交整套与选中页人工分；首次有效对比只展示 workspace 已过滤的数据。'):'先预评并持久化；你提交人工分后，仅同版本、同评分标准、同粒度的预测会解锁。')+'</p></div><div class="ga-actions"><button class="ga-btn" type="button" data-action="refresh">刷新</button><button class="ga-btn" type="button" data-action="switch-kind">切换到'+(state.opts.kind==='generated'?'上传素材':'生成作品')+'</button><button class="ga-btn primary" type="button" data-action="submit" data-submit-intent="'+submitIntent+'" aria-controls="ga-review-live" '+submitAttrs+'>'+esc(submitLabel)+'</button></div></header>'
-        +'<div class="ga-band"><div class="ga-row"><b>'+esc(deck?.data?.title||deck?.data?.name||'暂无作品')+'</b><span class="ga-pill">版本 '+esc((data.deckVersion||'').slice(0,10))+'</span><span class="ga-pill">标准 '+esc((data.rubricVersion||'').slice(0,10))+'</span><span class="ga-pill">'+esc(data.role||'')+'</span></div><div class="ga-pre-evaluation"><span class="ga-pre-evaluation-label">整套预评</span><span class="ga-pill ga-pre-evaluation-status" data-pre-evaluation-status data-status="'+esc(state.preEvaluationStatus||'unknown')+'" role="status" aria-live="polite" aria-atomic="true">'+esc(preEvaluationText()+(state.preEvaluationFeedback?' · '+state.preEvaluationFeedback:''))+'</span></div><div class="ga-actions" style="margin-top:10px"><div class="ga-row" role="group" aria-label="评分范围"><button class="ga-btn" type="button" data-scope="deck" aria-pressed="'+(state.scope==='deck'?'true':'false')+'" aria-controls="ga-review-units">整套</button><button class="ga-btn" type="button" data-scope="page" aria-pressed="'+(state.scope==='page'?'true':'false')+'" aria-controls="ga-review-units">选页</button></div>'+judgeActions+'</div><div class="ga-review-status" style="margin-top:10px" data-review-status tabindex="-1">'+status()+'</div>'+(data.isJudge?backfillStatusHtml():'')+'</div>'
-        +professionalReviewNoticeHtml()
+        +'<header class="ga-head"><div><h2>'+esc(professional?'专业人工评分 · '+kindLabel:'AI 盲评 · '+kindLabel)+'</h2><p class="ga-muted">'+esc(professional?(professionalManualOnly()?'仅人工素材只保存人工分，不发送给模型，也不进入 AI 参考样本。':coverTrainingOnePage()?'只需给唯一封面打一次分；提交后由 Sol 独立评审，不会读取你的分数。':'提交整套与选中页人工分；首次有效对比只展示 workspace 已过滤的数据。'):'先预评并持久化；你提交人工分后，仅同版本、同评分标准、同粒度的预测会解锁。')+'</p></div><div class="ga-actions"><button class="ga-btn" type="button" data-action="refresh">刷新</button>'+(coverTrainingOnePage()?'':'<button class="ga-btn" type="button" data-action="switch-kind">切换到'+(state.opts.kind==='generated'?'上传素材':'生成作品')+'</button>')+'<button class="ga-btn primary" type="button" data-action="submit" data-submit-intent="'+submitIntent+'" aria-controls="ga-review-live" '+submitAttrs+'>'+esc(submitLabel)+'</button></div></header>'
+        +'<div class="ga-band"><div class="ga-row"><b>'+esc(deck?.data?.title||deck?.data?.name||'暂无作品')+'</b><span class="ga-pill">版本 '+esc((data.deckVersion||'').slice(0,10))+'</span><span class="ga-pill">标准 '+esc((data.rubricVersion||'').slice(0,10))+'</span><span class="ga-pill">'+esc(data.role||'')+'</span></div><div class="ga-pre-evaluation"><span class="ga-pre-evaluation-label">'+(coverTrainingOnePage()?'本页评审':'整套预评')+'</span><span class="ga-pill ga-pre-evaluation-status" data-pre-evaluation-status data-status="'+esc(state.preEvaluationStatus||'unknown')+'" role="status" aria-live="polite" aria-atomic="true">'+esc(preEvaluationText()+(state.preEvaluationFeedback?' · '+state.preEvaluationFeedback:''))+'</span></div><div class="ga-actions" style="margin-top:10px">'+(coverTrainingOnePage()?'':'<div class="ga-row" role="group" aria-label="评分范围"><button class="ga-btn" type="button" data-scope="deck" aria-pressed="'+(state.scope==='deck'?'true':'false')+'" aria-controls="ga-review-units">整套</button><button class="ga-btn" type="button" data-scope="page" aria-pressed="'+(state.scope==='page'?'true':'false')+'" aria-controls="ga-review-units">选页</button></div>')+judgeActions+'</div><div class="ga-review-status" style="margin-top:10px" data-review-status tabindex="-1">'+status()+'</div>'+(data.isJudge&&!coverTrainingOnePage()?backfillStatusHtml():'')+'</div>'
+        +(coverTrainingOnePage()?'':professionalReviewNoticeHtml())
         +(data.contractWarnings?.length?'<div class="ga-warn">'+data.contractWarnings.map(esc).join('<br>')+'</div>':'')
-        +queueHtml()
+        +(coverTrainingOnePage()?'':queueHtml())
         +importPanel
-        +(state.scope==='page'?'<p class="ga-muted">勾选需要评分的页面，再提交所选评分。</p>':'')
+        +(state.scope==='page'?'<p class="ga-muted">'+(coverTrainingOnePage()?'唯一封面已自动选中。填写三项评分后提交。':'勾选需要评分的页面，再提交所选评分。')+'</p>':'')
         +'<div class="ga-grid" id="ga-review-units">'+unitCards+'</div>'
         +settings
         +stats
@@ -1647,6 +1673,7 @@
           beforeRender:()=>{if(!state.error&&currentDeckKey()===workKey)discardSubmittedDrafts(submittedUnits);},
         });
         if(destroyed||currentDeckKey()!==workKey)return false;
+        try{opts.onHumanSaved?.();}catch{}
         return true;
       }catch(err){
         const message=err?.message||String(err)||'提交失败，请重试';

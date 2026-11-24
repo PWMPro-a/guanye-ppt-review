@@ -292,16 +292,32 @@ window.GuanyeGeneration = (() => {
       .gg-head-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;flex:0 1 auto;min-width:0}
       .gg-title{font-size:18px;font-weight:700;margin:0;overflow-wrap:anywhere}.gg-sub{color:#6a7780;font-size:12px;margin-top:4px;overflow-wrap:anywhere}
       .gg-pill{display:inline-flex;align-items:center;border-radius:999px;padding:4px 10px;background:#eef5f7;color:#2f6574;font-size:12px;white-space:normal;overflow-wrap:anywhere;min-width:0;max-width:100%}
-      .gg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px;min-width:0}
-      .gg-card{min-width:0;max-width:100%;border:1px solid #e4e9ec;border-radius:11px;overflow:hidden;background:#fbfcfc}
-      .gg-preview{aspect-ratio:16/9;background:#f1f4f5;display:flex;align-items:center;justify-content:center;color:#89949b;overflow:hidden;min-width:0;text-align:center}
-      .gg-preview img{display:block;width:100%;height:100%;object-fit:contain;background:#fff}
+      .gg-cover-status{margin:0 0 14px;padding:12px 14px;border-left:3px solid #37735e;border-radius:8px;background:#eff6f2;color:#284b3d;min-width:0}
+      .gg-cover-status strong{display:block;margin-bottom:2px;font-size:15px}.gg-cover-status p{margin:0;font-size:13px}
+      .gg-cover-layout{display:grid;gap:14px;min-width:0}
+      .gg-cover-layout:not(.is-blind) .gg-cover-card{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(235px,1fr)}
+      .gg-cover-layout.is-blind{grid-template-columns:repeat(auto-fit,minmax(min(250px,100%),1fr));align-items:start}
+      .gg-cover-card .gg-preview{align-self:start}.gg-cover-card:not(.gg-ready) .gg-preview{aspect-ratio:auto;min-height:115px}
+      .gg-cover-info{padding:14px;min-width:0;display:grid;align-content:start;gap:12px}.gg-cover-info h4,.gg-cover-info p{margin:0}
+      .gg-cover-info .gg-actions,.gg-cover-controls{padding:0}.gg-cover-controls{margin-bottom:12px}.gg-cover-info .gg-meta{padding:0;font-size:13px}
+      .gg-cover-info details ul{margin:8px 0 0;padding-inline-start:18px}.gg-cover-info .gg-actions{align-items:start}
+      .gg-cover-selection,.gg-cover-editor{display:grid;gap:8px;min-width:0;width:100%}.gg-cover-selection label,.gg-cover-editor label{font-size:13px}
+      .gg-cover-selection textarea,.gg-cover-editor textarea{display:block;width:100%;min-width:0;resize:vertical;margin-top:4px;font:inherit}
+      .gg-cover-editor{margin-top:14px;padding:14px;border:1px solid #cfded5;border-radius:10px;background:#f5f9f6}.gg-cover-editor .gg-actions{padding:0}
+      .gg-cover-card .gg-button,.gg-cover-controls .gg-button,.gg-cover-editor .gg-button{min-height:40px}
+      @media(max-width:760px){.gg-cover-layout:not(.is-blind) .gg-cover-card{grid-template-columns:minmax(0,1fr)}}
+      .gg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;min-width:0}
+      .gg-card{min-width:0;max-width:100%;border:1px solid #e4e9ec;border-radius:13px;overflow:hidden;background:#fff;transition:border-color .18s,box-shadow .18s}
+      .gg-card.is-selected{border-color:#427761;box-shadow:0 0 0 3px #e3efe8}
+      .gg-preview{aspect-ratio:3/2;background:#111b18;display:flex;align-items:center;justify-content:center;color:#89949b;overflow:hidden;min-width:0;text-align:center}
+      .gg-preview img{display:block;width:100%;height:100%;object-fit:contain;background:#111b18}
       .gg-meta{padding:10px 12px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;min-width:0}
       .gg-name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1 1 120px}.gg-state{font-size:12px;color:#6d7b83;flex:0 1 auto;max-width:100%;overflow-wrap:anywhere}
       .gg-error{color:#a53a35;font-size:12px;padding:0 12px 10px;overflow-wrap:anywhere;word-break:break-word}
       .gg-actions{padding:0 12px 12px;display:flex;flex-wrap:wrap;gap:8px;min-width:0}
-      .gg-button{border:1px solid #cbd7dc;background:#fff;border-radius:8px;padding:6px 10px;cursor:pointer;color:#2f5967;max-width:100%;white-space:normal}
-      .gg-button.gg-review{background:#173d35;border-color:#173d35;color:#fff;font-weight:600}
+      .gg-button{border:1px solid #cbd7dc;background:#fff;border-radius:8px;padding:7px 11px;cursor:pointer;color:#2f5967;max-width:100%;white-space:normal}
+      .gg-button.gg-review,.gg-button.gg-primary{background:#173d35;border-color:#173d35;color:#fff;font-weight:600}
+      .gg-button:hover:not(:disabled){border-color:#6e9587;background:#f2f7f4}.gg-button.gg-primary:hover:not(:disabled),.gg-button.gg-review:hover:not(:disabled){background:#245c49}
       .gg-button:disabled{opacity:.55;cursor:default}.gg-empty{padding:28px;text-align:center;color:#7b878e}
       .gg-note{margin-top:12px;color:#6d7b83;font-size:12px;overflow-wrap:anywhere}.gg-bad{color:#a53a35}
       @media(max-width:420px){
@@ -321,7 +337,8 @@ window.GuanyeGeneration = (() => {
     head.append(element('div', {}, [title, sub]), headActions);
     const grid = element('div', { className: 'gg-grid' });
     const note = element('div', { className: 'gg-note', text: '页面按原顺序展示；失败只允许单页重试。' });
-    const shell = element('section', { className: 'gg-shell', 'aria-live': 'polite' }, [head, grid, note]);
+    const coverPanel = element('section', {hidden: true, 'aria-label': '封面训练'});
+    const shell = element('section', { className: 'gg-shell', 'aria-live': 'polite' }, [head, grid, note, coverPanel]);
     root.replaceChildren(style, shell);
 
     function setStatus(text, bad = false) {
@@ -711,6 +728,250 @@ window.GuanyeGeneration = (() => {
       for (const entry of created) preparePagePreview(entry);
     }
 
+    // Read-only polling. The model and generation endpoints are only called by explicit buttons.
+    const coverEndpoint = '/api/ai/generation/cover';
+    let coverTimer = 0, coverState = null, coverSignature = '', coverBusy = false;
+    let proposed = null, failure = '', blind = false, coverEpoch = 0;
+    const coverLabels = ['keep', 'change', 'doNotChange'];
+    const coverStatus = element('div', {className:'gg-cover-status', role:'status', tabindex:'-1'});
+    const coverBody = element('div');
+    coverPanel.append(coverStatus, coverBody);
+    const choiceDrafts = new Map();
+    const waitsForSol = feedback => !feedback?.recordId && ['queued','running','retrying'].includes(feedback?.reviewStatus);
+    let coverRefreshing = false, readFailure = '';
+    let humanSavePending = false;
+    const blindOrder = new Map();
+
+    async function updateCover() {
+      if (destroyed || !jobId || coverBusy || coverRefreshing || window.Cloud?.coverTrainingEnabled !== true) return;
+      coverRefreshing = true;
+      clearTimeout(coverTimer);
+      const epoch = ++coverEpoch;
+      try {
+        const next = unwrap(await window.GuanyeAI.request(coverEndpoint + '?job_id=' + encodeURIComponent(jobId)));
+        if (destroyed || coverBusy || epoch !== coverEpoch) return;
+        // `unwrap()` can also return the full response on installations with no pilot row.
+        if (next?.rootPageId) {
+          const signature = JSON.stringify(next);
+          coverState = next;
+          if (signature !== coverSignature || readFailure || humanSavePending) {
+            readFailure = '';
+            humanSavePending = false;
+            coverSignature = signature;
+            renderCover();
+          }
+        }
+      } catch (err) {
+        if (coverState && !destroyed && epoch === coverEpoch) {
+          readFailure = '暂时无法同步状态。已保存的评分不会丢失，可稍后刷新。';
+          renderCover();
+        }
+      } finally {
+        coverRefreshing = false;
+        if (!destroyed && !coverBusy && (epoch !== coverEpoch || humanSavePending
+            || coverState?.candidates?.some(x => ['queued','running','pending'].includes(x.status) || waitsForSol(x.feedback)))) {
+          coverTimer = window.setTimeout(updateCover, 3000);
+        }
+      }
+    }
+
+    async function coverAction(action, body, apply) {
+      if (coverBusy || destroyed) return;
+      coverBusy = true;
+      coverEpoch++;
+      failure = '';
+      renderCover();
+      try {
+        const response = unwrap(await window.GuanyeAI.request(coverEndpoint + '/' + action, {method: 'POST', body}));
+        if (!destroyed) apply(response);
+      } catch (err) {
+        if (!destroyed) failure = err.message || '封面训练操作失败';
+      } finally {
+        coverBusy = false;
+        if (!destroyed) { renderCover(); void updateCover(); }
+      }
+    }
+
+    function coverProgress(candidates, selected, canCompare) {
+      const latest = candidates.at(-1) || {};
+      const feedback = latest.feedback || {};
+      if (blind) return ['盲比候选', '不显示版本顺序和评分。先核对文字、裁切和版式，再填写选用理由。'];
+      if (selected?.feedback?.libraryVisible) return ['已收入素材库', '本次训练已完成。选用理由会成为后续封面策划可参考的案例。'];
+      if (selected) return ['已选版，等待入库', '进入所选版本的评分页，确认内容和入库条件，再收入素材库。'];
+      if (['queued','running','pending'].includes(latest.status)) return ['正在生成封面', '图片就绪后可独立打分。不需要重复提交生图。'];
+      if (latest.status === 'failed') return ['本版生成失败', '已有版本和评分仍保留。不自动重发生成请求。'];
+      if (humanSavePending) return ['人工评分已保存', '正在同步独立评审状态，无需重复打分。'];
+      if (latest.status === 'succeeded' && !feedback.human) return ['下一步：提交人工评分', '先评视觉、排版和内容匹配。提交后才会显示 Sol 的独立评分。'];
+      if (waitsForSol(feedback)) {
+        const detail = {queued:'Sol 评审已排队，结果会自动更新。', running:'Sol 正在独立评分，结果会自动更新。', retrying:'评审暂时失败，正在等待系统重试；人工分已保留。'};
+        return ['人工评分已保存', detail[feedback.reviewStatus]];
+      }
+      if (canCompare) return ['下一步：对比选版', '候选的人工分均已保存。进入盲比后，核对内容并说明选用理由。'];
+      if (feedback.recordId) return ['Sol 已完成独立评分', '查看两边分数；可以修正正式分、获取改稿建议，也可以直接选用这一版。'];
+      if (feedback.human && feedback.reviewStatus === 'failed') return ['Sol 评审未完成', '人工分已保留。可刷新查看状态，或使用已确认的人工评分继续。'];
+      if (feedback.human) return ['人工评分已保存', '尚未同步到 Sol 结果。可使用「刷新状态」查看。'];
+      return ['读取训练状态', '封面就绪后，可以从这里继续。'];
+    }
+
+    function renderCoverStatus(heading, detail) {
+      if (coverStatus.firstElementChild?.textContent === heading && coverStatus.lastElementChild?.textContent === detail) return;
+      coverStatus.replaceChildren(element('strong', {text:heading}), element('p', {text:detail}));
+    }
+
+    function showHumanSaved() {
+      humanSavePending = true;
+      coverEpoch++;
+      renderCoverStatus('人工评分已保存', '正在同步独立评审状态，无需重复打分。');
+    }
+
+    function renderCover() {
+      if (!coverState) return;
+      coverPanel.hidden = false;
+      reviewButton.hidden = true;
+      grid.hidden = true;
+      sub.hidden = true;
+      note.hidden = true;
+      const {candidates, selectedPageId, enabled} = coverState;
+      const latest = candidates.at(-1);
+      const selected = candidates.find(row => row.pageId === selectedPageId);
+      const finished = candidates.filter(row => row.status === 'succeeded');
+      const queueMoving = candidates.some(row => ['queued','running','pending'].includes(row.status));
+      const multiple = finished.length >= 2;
+      const canCompare = multiple && finished.every(row => row.feedback?.decisionId && !waitsForSol(row.feedback));
+      if (selected?.feedback?.libraryVisible || !canCompare) blind = false;
+      renderCoverStatus(...coverProgress(candidates, selected, canCompare));
+      const button = (label, action, primary = false) => {
+        const node = element('button', {className:'gg-button' + (primary ? ' gg-primary' : ''), type:'button', text:label});
+        node.disabled = coverBusy;
+        node.addEventListener('click', action);
+        return node;
+      };
+      const bar = element('div', {className:'gg-actions gg-cover-controls'});
+      if (!blind) bar.append(button('刷新状态', updateCover));
+      if (canCompare && !queueMoving && enabled && !selected?.feedback?.libraryVisible) {
+        bar.prepend(button(blind ? '退出盲比' : '开始盲比', () => {
+          blind = !blind; renderCover(); coverStatus.focus();
+        }, !blind));
+      }
+      const gallery = element('div', {className:'gg-cover-layout' + (blind ? ' is-blind' : '')});
+      const activeElement = document.activeElement;
+      const draftFocus = coverBody.contains(activeElement) ? activeElement?.dataset?.choiceFocus : '';
+      const selectionRange = draftFocus && activeElement.tagName === 'TEXTAREA' ? [activeElement.selectionStart, activeElement.selectionEnd] : null;
+      const detailOpen = new Set([...coverBody.querySelectorAll('details[open][data-cover-details]')].map(node => node.dataset.coverDetails));
+      coverBody.replaceChildren(bar);
+      if (failure || readFailure) coverBody.append(element('p', {className:'gg-error', role:'alert', text:failure || readFailure}));
+      if (!enabled) coverBody.append(element('p', {text:'训练已关闭，仅可查看历史。'}));
+      coverBody.append(gallery);
+      const visible = blind ? [...finished] : [...candidates].reverse();
+      if (blind) {
+        for (const row of visible) if (!blindOrder.has(row.pageId)) blindOrder.set(row.pageId, Math.random());
+        visible.sort((a, b) => blindOrder.get(a.pageId) - blindOrder.get(b.pageId));
+      } else if (selected) {
+        visible.sort((a, b) => Number(b === selected) - Number(a === selected));
+      }
+      for (const [index, row] of visible.entries()) {
+        const label = blind ? `候选 ${String.fromCharCode(65 + index)}` : row.ordinal ? `改稿 ${row.ordinal}` : '首稿';
+        const preview = element('div', {className:'gg-preview', text: row.image?.path ? '正在加载私有预览…' : statusText(row.status)});
+        const isSelected = !blind && row === selected;
+        const feedback = row.feedback || {};
+        const badge = isSelected ? (feedback.libraryVisible ? ' · 已入库' : ' · 已选用') : '';
+        const info = element('div', {className:'gg-cover-info'}, [element('h4', {text:label + badge})]);
+        const card = element('article', {className:'gg-card gg-cover-card' + (isSelected ? ' is-selected' : '') + (row.image?.path ? ' gg-ready' : '')}, [preview, info]);
+        if (row.image?.path) {
+          const artifactPath = `/api/ai/generation/artifact?job_id=${encodeURIComponent(row.jobId)}&page_id=${encodeURIComponent(row.pageId)}`;
+          resolveImage({...row, id: row.pageId, artifactPath}).then(url => {
+            if (preview.isConnected) preview.replaceChildren(element('img', {alt: label, src: url}));
+          }).catch(() => { if (preview.isConnected) preview.textContent = '私有预览暂不可用'; });
+        }
+        const actions = element('div', {className:'gg-actions'});
+        if (row.status === 'succeeded' && !blind) {
+          const summarize = scores => `视觉 ${scores?.visual ?? '—'} · 排版 ${scores?.layout ?? '—'} · 内容 ${scores?.match ?? '—'}`;
+          if (feedback.human) {
+            info.append(element('p', {className:'gg-meta', text:`首次人评：${summarize(feedback.human)}`}));
+            if (feedback.formalScores && summarize(feedback.formalScores) !== summarize(feedback.human)) {
+              info.append(element('p', {className:'gg-meta', text:`正式分：${summarize(feedback.formalScores)}`}));
+            }
+            if (feedback.recordId) {
+              info.append(element('p', {className:'gg-meta', text:`Sol 原判：${summarize(feedback.aiScores)}`}));
+              const reasons = (Array.isArray(feedback.aiReasons) ? feedback.aiReasons : []).filter(reason => typeof reason === 'string');
+              if (reasons.length) {
+                const details = element('details', {className:'gg-meta', 'data-cover-details':row.pageId}, [element('summary', {text:'Sol 为什么这样打分？'}),
+                  element('ul', {}, reasons.map(reason => element('li', {text:reason}))) ]);
+                details.open = detailOpen.has(row.pageId);
+                info.append(details);
+              }
+            }
+          }
+          if (isSelected && feedback.libraryVisible) {
+            actions.append(button('开始下一张', () => opts.onNewCover?.(), true), button('查看素材库', () => opts.onOpenLibrary?.()));
+          } else if (enabled && !selected?.feedback?.libraryVisible) {
+            const openReview = () => opts.onOpenReview?.({jobId:row.jobId, coverDeckId:row.deckId, coverRootJobId:jobId});
+            const label = isSelected ? '核对评分并入库' : !feedback.human ? '独立打分' : feedback.recordId ? '查看或纠正评分' : '查看已保存评分';
+            actions.append(button(label, openReview, isSelected || !feedback.human));
+            if (!selected && !queueMoving && latest === row && row.ordinal < 2 && feedback.recordId && !proposed) {
+              actions.append(button('获取改稿建议', () => coverAction('suggest', {
+                job_id:jobId, page_id:row.pageId, record_id:feedback.recordId,
+              }, value => { proposed = {page_id:row.pageId, record_id:value.recordId,
+                request_key:crypto.randomUUID(), instructions:value.instructions}; }), !canCompare));
+            }
+          }
+        }
+        if (enabled && !queueMoving && !selected?.feedback?.libraryVisible && feedback.decisionId && !waitsForSol(feedback)
+            && !humanSavePending
+            && row.pageId !== selectedPageId && (blind || !multiple)) {
+          const draftKey = `${blind ? 'blind' : 'single'}:${row.pageId}`;
+          if (!choiceDrafts.has(draftKey)) choiceDrafts.set(draftKey, {reason:'', checked:false});
+          const draft = choiceDrafts.get(draftKey);
+          const form = element('form', {className:'gg-cover-selection'});
+          const reason = element('textarea', {rows:'2', maxlength:'700', required:'required', 'data-choice-focus':draftKey+':reason'});
+          reason.value = draft.reason;
+          reason.disabled = coverBusy;
+          reason.addEventListener('input', () => { draft.reason = reason.value; reason.setCustomValidity(''); });
+          const check = element('input', {type:'checkbox', required:'required', 'data-choice-focus':draftKey+':check'});
+          check.checked = draft.checked;
+          check.disabled = coverBusy;
+          check.addEventListener('change', () => { draft.checked = check.checked; });
+          const submit = button(blind ? `选用${label}` : '确认选用此版', () => {}, true);
+          submit.type = 'submit';
+          form.append(element('label', {text:'选用理由（必填）'}, [reason]),
+            element('label', {}, [check, document.createTextNode(' 已核对文案，无错漏和裁切')]), submit);
+          form.addEventListener('submit', event => {
+            event.preventDefault();
+            if (!draft.reason.trim()) { reason.setCustomValidity('请写一句选用理由'); reason.reportValidity(); return; }
+            if (!draft.checked) { check.reportValidity(); return; }
+            void coverAction('select', {page_id:row.pageId, decision_id:feedback.decisionId,
+              reason:draft.reason.trim(), content_ok:draft.checked, blind}, value => { coverState = value; blind = false; proposed = null; choiceDrafts.clear(); coverStatus.focus(); });
+          });
+          actions.append(form);
+        }
+        if (actions.children.length) info.append(actions);
+        gallery.append(card);
+      }
+      if (enabled && !blind && proposed?.page_id === latest?.pageId) {
+        const editor = element('div', {className:'gg-cover-editor'}, [element('strong', {text:'核对改稿指令'}),
+          element('p', {text:'确认后只生成一张新候选。文案、参考图与首稿记录保持不变。'})]);
+        coverLabels.forEach((key, i) => {
+          const label = element('label', {text:['保留什么','改哪里','不得改什么'][i]});
+          const field = element('textarea', {maxlength:'700', rows:'2', 'data-choice-focus':'revision:'+key});
+          field.value = proposed.instructions[key] || '';
+          field.addEventListener('input', () => { proposed.instructions[key] = field.value; });
+          field.disabled = coverBusy;
+          label.append(field);
+          editor.append(label);
+        });
+        editor.append(element('div', {className:'gg-actions'}, [button('按建议改一版', () => {
+          if (!coverLabels.every(key => proposed.instructions[key].trim())) { failure = '请填写全部三项指令'; renderCover(); return; }
+          void coverAction('revise', proposed, value => { coverState = value; proposed = null; coverStatus.focus(); });
+        }, true), button('放弃建议', () => { proposed = null; renderCover(); })]));
+        coverBody.append(editor);
+      }
+      if (draftFocus && !coverBusy) {
+        const target = [...coverBody.querySelectorAll('[data-choice-focus]')].find(node => node.dataset.choiceFocus === draftFocus);
+        target?.focus({preventScroll:true});
+        if (selectionRange) target?.setSelectionRange(...selectionRange);
+      }
+    }
+
     function applyJob(next) {
       if (destroyed || !next || typeof next !== 'object') return;
       const expectedJobId = String(opts.jobId || opts.job_id || '');
@@ -734,6 +995,8 @@ window.GuanyeGeneration = (() => {
         delete reviewButton.dataset.deckId;
       }
       renderPages();
+      if (coverState) reviewButton.hidden = true;
+      void updateCover();
       if (typeof opts.onUpdate === 'function') {
         try { opts.onUpdate(next); } catch {}
       }
@@ -828,6 +1091,7 @@ window.GuanyeGeneration = (() => {
 
     function destroy() {
       destroyed = true;
+      clearTimeout(coverTimer);
       clearPreviewObservations();
       invalidateInFlight();
       stopPolling();
@@ -842,7 +1106,11 @@ window.GuanyeGeneration = (() => {
     if (jobId && !terminal.has(job?.status)) schedule();
     else if (!jobId && opts.autoStart !== false) Promise.resolve().then(start);
 
-    return { start, refresh, retryPage, destroy, get job() { return job; } };
+    return { start, refresh, refreshCover:updateCover, showHumanSaved, focusCover:() => {
+      if (coverPanel.hidden) return false;
+      coverStatus.focus();
+      return true;
+    }, retryPage, destroy, get job() { return job; } };
   }
 
   return { mount };

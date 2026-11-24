@@ -96,7 +96,7 @@ class ManageMigrationTests(unittest.TestCase):
 
     def test_base_only_database_has_explicit_upgrade_path(self):
         api=FakeApi(base_installed=True,history_table_exists=False,
-                    probes={'m02':False,'m03':False,'m04':False,'m05':False,'m06':False,'m07':False,'m08':False,'m09':False,'m10':False,'m11':False,'m12':False,'m13':False,'m14':False,'m15':False,'m16':False,'m17':False,'m18':False,'m19':False,'m20':False,'m21':False,'m22':False,'m23':False,'m24':False,'m25':False,'m26':False,'m27':False,'m28':False,'m29':False,'m30':False,'m31':False,'m32':False,'m33':False,'m34':False,'m35':False})
+                    probes={'m02':False,'m03':False,'m04':False,'m05':False,'m06':False,'m07':False,'m08':False,'m09':False,'m10':False,'m11':False,'m12':False,'m13':False,'m14':False,'m15':False,'m16':False,'m17':False,'m18':False,'m19':False,'m20':False,'m21':False,'m22':False,'m23':False,'m24':False,'m25':False,'m26':False,'m27':False,'m28':False,'m29':False,'m30':False,'m31':False,'m32':False,'m33':False,'m34':False,'m35':False,'m36':False,'m37':False,'m38':False,'m39':False,'m40':False,'m41':False})
         result=manage._migrate_database(api,TEST_REF,catalog=self.catalog,upgrade_unmanaged_base=True)
         self.assertTrue(result['initialized_unmanaged_base'])
         self.assertEqual(result['applied'],self.versions)
@@ -105,7 +105,7 @@ class ManageMigrationTests(unittest.TestCase):
 
     def test_base_only_upgrade_refuses_database_with_later_objects(self):
         api=FakeApi(base_installed=True,history_table_exists=False,
-                    probes={'m03':True,'m04':False,'m05':False,'m06':False,'m07':False,'m08':False,'m09':False,'m10':False,'m11':False,'m12':False,'m13':False,'m14':False,'m15':False,'m16':False,'m17':False,'m18':False,'m19':False,'m20':False,'m21':False,'m22':False,'m23':False,'m24':False,'m25':False,'m26':False,'m27':False,'m28':False,'m29':False,'m30':False,'m31':False,'m32':False,'m33':False,'m34':False,'m35':False})
+                    probes={'m03':True,'m04':False,'m05':False,'m06':False,'m07':False,'m08':False,'m09':False,'m10':False,'m11':False,'m12':False,'m13':False,'m14':False,'m15':False,'m16':False,'m17':False,'m18':False,'m19':False,'m20':False,'m21':False,'m22':False,'m23':False,'m24':False,'m25':False,'m26':False,'m27':False,'m28':False,'m29':False,'m30':False,'m31':False,'m32':False,'m33':False,'m34':False,'m35':False,'m36':False,'m37':False,'m38':False,'m39':False,'m40':False,'m41':False})
         with self.assertRaisesRegex(RuntimeError,'not base-only'):
             manage._migrate_database(api,TEST_REF,catalog=self.catalog,upgrade_unmanaged_base=True)
         self.assertEqual(api.history,{})
@@ -238,7 +238,7 @@ class ManageMigrationTests(unittest.TestCase):
         self.assertIn("not has_table_privilege('service_role',to_regclass('guanye_internal.uploaded_source_provenance'),'SELECT')",sql)
 
     def test_adoption_requires_single_judge_intake_probe(self):
-        api=FakeApi(base_installed=True,history_table_exists=False,probes={'m35':False})
+        api=FakeApi(base_installed=True,history_table_exists=False,probes={'m35':False,'m36':False,'m37':False,'m38':False,'m39':False,'m40':False,'m41':False})
         with self.assertRaisesRegex(RuntimeError,'20261122_35_single_judge_intake'):
             manage._migrate_database(api,TEST_REF,catalog=self.catalog,adopt_existing=True)
         self.assertEqual(api.history,{})
@@ -383,6 +383,7 @@ const {pgcrypto}=require(process.argv[3]);
   assert.equal(legacyProbes.m33,false,'review queue probe safe on an untouched library');
   assert.equal(legacyProbes.m34,false,'owner activation probe safe on an untouched library');
   assert.equal(legacyProbes.m35,false,'intake probe safe on an untouched library');
+  assert.equal(legacyProbes.m36,false,'cover training must not be inferred on an untouched library');
   for(let index=7;index<process.argv.length-2;index++) await db.exec(fs.readFileSync(process.argv[index],'utf8'));
   const currentProbes=(await db.query(probe)).rows[0];
   assert.equal(currentProbes.m28,true,'admission privileges and triggers detected after M28');
@@ -393,8 +394,10 @@ const {pgcrypto}=require(process.argv[3]);
   assert.equal(currentProbes.m33,true,'professional review queue detected after M33');
   assert.equal(currentProbes.m34,true,'professional owner activation detected after M34');
   assert.equal(currentProbes.m35,true,'direct intake queue, owner read policy and claim index detected after M35');
+  assert.equal(currentProbes.m36,true,'cover training detected only after the migration');
+  assert.equal(currentProbes.m38,true,'cover progress detected only after the migration');
   const failurePath=process.argv[process.argv.length-1];
-  const expected=['20261121_01_ai_review_foundation','20261121_02_ai_reviews','20261121_03_ai_planning','20261121_04_ai_generation','20261121_05_review_queue','20261121_06_generation_history','20261121_07_review_calibration','20261121_08_review_comparison','20261121_09_review_backfill','20261121_10_review_queue_listing','20261121_11_planning_history','20261121_12_library_classification','20261121_13_formal_correction','20261121_14_library_formal_scores','20261121_15_planning_original_references','20261121_16_uploaded_baseline','20261121_17_review_workspace_batch','20261121_18_review_backfill_classification','20261121_19_uploaded_source_provenance','20261121_20_uploaded_source_groups','20261121_21_uploaded_comparison_source_dedup','20261122_22_single_judge_foundation','20261122_23_single_judge_original_archive','20261122_24_single_judge_submission','20261122_25_image_workers_default','20261122_26_single_judge_score_revisions','20261122_27_single_judge_review_workspace','20261122_28_single_judge_admission','20261122_29_single_judge_generation_references','20261122_30_single_judge_creation','20261122_31_single_judge_image_runtime','20261122_32_single_judge_legacy_backfill','20261122_33_single_judge_review_queue','20261122_34_single_judge_owner_activation','20261122_35_single_judge_intake'];
+  const expected=['20261121_01_ai_review_foundation','20261121_02_ai_reviews','20261121_03_ai_planning','20261121_04_ai_generation','20261121_05_review_queue','20261121_06_generation_history','20261121_07_review_calibration','20261121_08_review_comparison','20261121_09_review_backfill','20261121_10_review_queue_listing','20261121_11_planning_history','20261121_12_library_classification','20261121_13_formal_correction','20261121_14_library_formal_scores','20261121_15_planning_original_references','20261121_16_uploaded_baseline','20261121_17_review_workspace_batch','20261121_18_review_backfill_classification','20261121_19_uploaded_source_provenance','20261121_20_uploaded_source_groups','20261121_21_uploaded_comparison_source_dedup','20261122_22_single_judge_foundation','20261122_23_single_judge_original_archive','20261122_24_single_judge_submission','20261122_25_image_workers_default','20261122_26_single_judge_score_revisions','20261122_27_single_judge_review_workspace','20261122_28_single_judge_admission','20261122_29_single_judge_generation_references','20261122_30_single_judge_creation','20261122_31_single_judge_image_runtime','20261122_32_single_judge_legacy_backfill','20261122_33_single_judge_review_queue','20261122_34_single_judge_owner_activation','20261122_35_single_judge_intake','20261123_38_cover_training','20261123_39_cover_after_human','20261124_40_cover_progress','20261124_41_cover_visual_reference'];
   const history=(await db.query('select version from guanye_internal.schema_migrations order by version')).rows.map(row=>row.version);
   assert.deepEqual(history,expected);
   const objects=(await db.query(`select
@@ -701,6 +704,45 @@ class MigrationPlanTests(unittest.TestCase):
             self.assertEqual(plan.call_args.args[1],TEST_REF)
             self.assertEqual(migrate.call_args.args[1],TEST_REF)
             self.assertEqual(private.read_bytes(),original)
+
+    def test_cover_pilot_requires_an_explicit_distinct_production_project(self):
+        for extra in ([], ['--production-project-ref', TEST_REF], ['--production-project-ref', 'bad-ref']):
+            with self.subTest(extra=extra), mock.patch('sys.argv', ['manage.py', 'migrate',
+                '--project-ref', TEST_REF, '--cover-pilot', *extra]), \
+                 mock.patch.object(manage.urllib.request, 'build_opener') as opener, \
+                 contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as caught:
+                    manage.main()
+                self.assertEqual(caught.exception.code, 2)
+                opener.assert_not_called()
+
+    def test_cover_migration_requires_pilot_flag_and_preserves_it_in_next_command(self):
+        prod = 'qrstabcdefghijklmnop'
+        extra = ['--cover-pilot', '--production-project-ref', prod]
+        plan_result = {'migration_path': {'command': f'python -B cloud/manage.py migrate --project-ref {TEST_REF}'}}
+        migrate_result = {'adopted':False, 'initialized_unmanaged_base':False, 'applied':[]}
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(manage,'PRIVATE',Path(tmp)/'private-deployment.json'), \
+             mock.patch.dict(os.environ,{'SUPABASE_ACCESS_TOKEN':'sbp_test'},clear=False), \
+             mock.patch.object(manage,'_migrate_database',return_value=migrate_result) as migrate, \
+             mock.patch.object(manage,'_migration_plan',return_value=plan_result) as plan, \
+             mock.patch.object(manage.urllib.request,'build_opener',return_value=mock.Mock()):
+            with mock.patch('sys.argv',['manage.py','migrate','--project-ref',TEST_REF]), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                manage.main()
+            default_catalog=migrate.call_args.kwargs['catalog']
+            self.assertNotIn(manage.COVER_PILOT_VERSION,[entry['version'] for entry in default_catalog])
+            with mock.patch('sys.argv',['manage.py','migrate','--project-ref',TEST_REF,*extra]), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                manage.main()
+            pilot_catalog=migrate.call_args.kwargs['catalog']
+            self.assertEqual(pilot_catalog[:-len(manage.COVER_PILOT_VERSIONS)],default_catalog)
+            self.assertEqual(tuple(e['version'] for e in pilot_catalog[-len(manage.COVER_PILOT_VERSIONS):]),manage.COVER_PILOT_VERSIONS)
+            with mock.patch('sys.argv',['manage.py','migration-plan','--project-ref',TEST_REF,*extra]), \
+                 contextlib.redirect_stdout(io.StringIO()) as output:
+                manage.main()
+            self.assertEqual(plan.call_args.kwargs['catalog'],pilot_catalog)
+            self.assertTrue(json.loads(output.getvalue())['migration_path']['command'].endswith(' '.join(extra)))
 
     def test_cli_management_api_proxy_requires_explicit_https_proxy(self):
         cases=((None,{}),('',{}),('   ',{}),('http://proxy.example:8080',{'https':'http://proxy.example:8080'}))

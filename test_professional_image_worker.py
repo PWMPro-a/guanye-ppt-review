@@ -35,6 +35,23 @@ class CompositionTests(unittest.TestCase):
         self.assertEqual(worker.config.state_dir, settings_path(CONFIG).with_suffix(""))
         self.assertNotEqual(worker.config.state_dir, Path(tempfile.gettempdir()))
 
+    def test_cover_worker_does_not_need_an_exe_or_review_provider_key(self):
+        from cloud.cover_image_channel import CoverImageChannel
+        from cloud.professional_image_settings import CoverWorkerSettings
+        from cloud.professional_image_worker import build_cover_worker
+
+        self.ready.unlink()
+        settings = CoverWorkerSettings(SECRETS.email, SECRETS.password, "w" * 40)
+        channel = CoverImageChannel("fixture-image-key-0000")
+        worker = build_cover_worker(CONFIG, settings, channel)
+        self.assertIsNone(worker.exe)
+        self.assertTrue(worker.cover_only)
+        self.assertEqual(worker.config.workers, 1)
+        self.assertIs(worker.cover_channel, channel)
+        self.assertEqual(worker.gateway._provider.config.email, SECRETS.email)
+        self.assertNotIn(SECRETS.password, repr(settings))
+        self.assertNotIn(settings.worker_token, repr(settings))
+
     @unittest.skipUnless(os.name == "nt", "Windows current-user DPAPI")
     def test_dpapi_worker_settings_do_not_replace_review_credentials(self):
         settings = ImageSettings("w" * 40, str(self.ready))

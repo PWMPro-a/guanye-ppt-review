@@ -50,6 +50,12 @@ def build(environ=None, root=None):
     config = dict(url=supabase_url, anonKey=key, workspaceId=workspace_id)
     if values['AI_GATEWAY_URL']:
         config['aiGatewayUrl'] = _public_https_url(values['AI_GATEWAY_URL'], 'AI_GATEWAY_URL')
+    if source.get('GUANYE_COVER_TRAINING_SITE', '').strip() == '1':
+        gateway = urlparse(config.get('aiGatewayUrl', ''))
+        if gateway.scheme != 'https' or gateway.path not in ('', '/'):
+            raise SystemExit('Training site requires a same-origin HTTPS gateway (no path prefix)')
+        config.update(singleJudge=True, localReview=True, coverTrainingSite=True)
+
 
     destination = project_root / 'dist'
     if destination.exists():

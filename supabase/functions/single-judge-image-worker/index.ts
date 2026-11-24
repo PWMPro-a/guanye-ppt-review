@@ -32,7 +32,7 @@ type Dependencies = {
 };
 type Lease = { page_id: string; lease_token: string };
 type Command =
-  | { action: "claim"; worker_id: string; limit: number; lease_seconds: number }
+  | { action: "claim"; worker_id: string; limit: number; lease_seconds: number; cover_training?: true }
   | (Lease & { action: "heartbeat"; lease_seconds: number })
   | (Lease & { action: "reference" | "issue-upload" | "fail" })
   | (Lease & { action: "complete"; content_type: ContentType; content_sha256: string;
@@ -119,11 +119,13 @@ function parse(body: unknown): Command {
   if (!record(body)) throw invalid();
   const { action, worker_id, limit, lease_seconds, page_id, lease_token } = body;
   if (action === "claim") {
-    exact(body, ["action", "worker_id", "limit", "lease_seconds"]);
+    const cover = Object.hasOwn(body, "cover_training");
+    exact(body, ["action", "worker_id", "limit", "lease_seconds", ...(cover ? ["cover_training"] : [])]);
+    if (cover && body.cover_training !== true) throw invalid();
     if (typeof worker_id !== "string" || INVALID_CHAR.test(worker_id) ||
-        !int([...worker_id.trim()].length, 1, 200) || !int(limit, 1, 32) ||
+        !int([...worker_id.trim()].length, 1, 200) || !int(limit, 1, cover ? 20 : 32) ||
         !int(lease_seconds, 60, 7200)) throw invalid();
-    return { action, worker_id: worker_id.trim(), limit, lease_seconds };
+    return { action, worker_id: worker_id.trim(), limit, lease_seconds, ...(cover ? {cover_training: true as const} : {}) };
   }
   if (!uuid(page_id) || !uuid(lease_token)) throw invalid();
   const lease = { page_id: page_id.toLowerCase(), lease_token: lease_token.toLowerCase() };
@@ -320,7 +322,7 @@ async function run(
 ): Promise<unknown> {
   const scope = { p_workspace: workspace, p_actor: actor };
   if (command.action === "claim") {
-    const pages = await rpc(client, "ai_generation_claim_pages", {
+    const pages = await rpc(client, command.cover_training ? "single_judge_cover_claim_pages" : "ai_generation_claim_pages", {
       ...scope, p_worker_id: command.worker_id, p_limit: command.limit, p_lease_seconds: command.lease_seconds,
     });
     if (!Array.isArray(pages) || !pages.every(record) || pages.length > command.limit) throw badResponse();

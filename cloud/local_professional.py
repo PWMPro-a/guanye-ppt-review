@@ -78,6 +78,8 @@ class ProfessionalServer(ThreadingHTTPServer):
         self.analyze_slot = BoundedSemaphore(1)
         self.artifact_slots = BoundedSemaphore(4)
         exposed = {**config, "localImport": True, "localReview": True, "localCreation": creation is not None}
+        if getattr(creation, "cover_training", False):
+            exposed["localCoverTraining"] = True
         self.browser_config = b"window.CLOUD_CONFIG = " + json.dumps(exposed, ensure_ascii=True).encode("ascii") + b";\n"
         super().__init__(("127.0.0.1", port), ProfessionalHandler)
 
@@ -164,7 +166,7 @@ class ProfessionalHandler(SimpleHTTPRequestHandler):
             elif self.headers.get("Transfer-Encoding") is not None or self.headers.get_all("Content-Length", []) not in ([], ["0"]):
                 raise ValueError("读取请求不能包含正文")
             actor = service.authorize(token)
-            if target.path == ANALYZE:
+            if target.path in (ANALYZE, "/api/ai/generation/cover/suggest", "/api/ai/training/cover-pair"):
                 slot = self.server.analyze_slot
             elif target.path.endswith("/artifact"):
                 slot = self.server.artifact_slots

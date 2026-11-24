@@ -337,9 +337,14 @@ def _worker_reference(ctx):
         "p_page": page_id,
         "p_lease_token": lease_token,
     }, privileged=True)
+    expected_sha = None
+    if isinstance(path, dict):
+        expected_sha, path = path.get("sha256"), path.get("path")
     if not isinstance(path, str) or not path:
         raise ValueError("该页没有可用的确认参考图")
     raw = _read_storage_bytes(ctx, path)
+    if expected_sha is not None and hashlib.sha256(raw).hexdigest() != expected_sha:
+        raise ValueError("素材原图已变化；请重新策划，未发送生图渠道")
     content_type = _detect_image_type(raw)
     return {
         "image_base64": base64.b64encode(raw).decode("ascii"),

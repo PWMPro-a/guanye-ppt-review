@@ -2,6 +2,7 @@
 from dataclasses import asdict, dataclass, field
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import re
 from urllib.parse import urlsplit
@@ -56,6 +57,43 @@ def save_settings(config, settings):
 
 def image_singleton(config):
     return _singleton_name("Local\\GuanyeProfessionalImage-" + image_fingerprint(config).hex())
+
+
+@dataclass(frozen=True)
+class CoverWorkerSettings:
+    email: str = field(repr=False)
+    password: str = field(repr=False)
+    worker_token: str = field(repr=False)
+
+    def __post_init__(self):
+        if not isinstance(self.worker_token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", self.worker_token):
+            raise ValueError("试点生图 Worker 令牌长度或格式无效")
+        if not isinstance(self.email, str) or not 1 <= len(self.email) <= 320 or "@" not in self.email:
+            raise ValueError("试点评分账号邮箱无效")
+        if not isinstance(self.password, str) or not 1 <= len(self.password) <= 4096:
+            raise ValueError("缺少试点评分账号密码")
+
+
+def cover_settings_path(config):
+    root = Path(os.environ["LOCALAPPDATA"])
+    if not root.is_absolute():
+        raise ValueError("LOCALAPPDATA 必须是绝对路径")
+    return root / "Guanye" / "CoverPilot" / ("image-" + image_fingerprint(config).hex() + ".dpapi")
+
+
+def _cover_worker_path(config):
+    return cover_settings_path(config).with_suffix(".cover-worker.dpapi")
+
+
+def load_cover_worker_settings(config):
+    data = _load_payload(_cover_worker_path(config), image_fingerprint(config) + b"\0cover-worker-v1")
+    if not isinstance(data, dict) or set(data) != {"email", "password", "worker_token"}:
+        raise ValueError("试点生图 Worker 凭据字段无效")
+    return CoverWorkerSettings(**data)
+
+
+def save_cover_worker_settings(config, settings):
+    _save_payload(_cover_worker_path(config), image_fingerprint(config) + b"\0cover-worker-v1", asdict(settings))
 
 
 def build_config(config, settings):

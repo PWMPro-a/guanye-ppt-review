@@ -245,20 +245,20 @@ function singleJudgeSubmitterSidebar() {
 }
 function professionalReviewNav() {
   const items=[];
-  if (window.Cloud?.professionalReviewAvailable) items.push('<button class="nav-item" data-action="professional-review">'+icon('star')+'<span>正式评分工作台</span></button>');
+  if (window.Cloud?.professionalReviewAvailable) items.push('<button class="nav-item" data-action="professional-review">'+icon('star')+'<span>'+(window.Cloud?.coverTrainingSite ? '评分记录' : '正式评分工作台')+'</span></button>');
   if (['judge','admin'].includes(singleJudgeRole())&&window.Cloud?.professionalComparisonAvailable) items.push('<button class="nav-item" data-action="professional-permissions">'+icon('settings')+'<span>素材与数据</span></button>');
   return items.join('');
 }
 function professionalCreationNav() {
   return professionalCreationVisible()
-    ? '<button class="nav-item" data-ai-action="open" data-professional-creation="true">'+icon('star')+'<span>策划 / 生图</span></button>'
+    ? '<button class="nav-item" data-ai-action="open" data-professional-creation="true">'+icon('star')+'<span>'+(window.Cloud?.coverTrainingSite ? '封面训练' : '策划 / 生图')+'</span></button>'
     : '';
 }
 function singleJudgeSidebar() {
   if(singleJudgeSubmitterMode())return singleJudgeSubmitterSidebar();
   const webNav=webIntakeVisible()?'<button class="nav-item" data-action="web-intake">'+icon('upload')+'<span>网页投递</span></button>':'';
   const submitNav=professionalImportVisible()?'<button class="nav-item" data-action="professional-import">'+icon('folder')+'<span>本机专业投递</span></button>':'';
-  return '<aside class="sidebar"><a class="brand" href="#" data-action="home"><span class="brand-mark">'+icon('mark')+'</span><span>观页<span class="brand-en">SINGLE JUDGE</span></span></a><div class="workspace-label">单评委专业版 · '+esc(singleJudgeRoleLabel())+'</div><nav aria-label="作品导航"><button class="nav-item '+(!activeId&&view==='all'?'active':'')+'" data-view="all">'+icon('library')+'<span>全部作品</span><span class="nav-count">'+decks.length+'</span></button>'+webNav+submitNav+professionalCreationNav()+professionalReviewNav()+'</nav><div class="sidebar-divider"></div><button class="nav-item" data-cloud-action="password">'+icon('settings')+'<span>修改登录密码</span></button><button class="nav-item" data-cloud-action="logout">'+icon('arrow')+'<span>退出登录</span></button><div class="sidebar-bottom"><p>'+(singleJudgeCapabilities().canUseOfficialReview?'浏览原库；策划生成与正式评分分轨使用。':'管理员只读浏览；旧写入入口已停用。')+'</p></div></aside>';
+  return '<aside class="sidebar"><a class="brand" href="#" data-action="home"><span class="brand-mark">'+icon('mark')+'</span><span>观页<span class="brand-en">SINGLE JUDGE</span></span></a><div class="workspace-label">单评委专业版 · '+esc(singleJudgeRoleLabel())+'</div><nav aria-label="作品导航"><button class="nav-item '+(!activeId&&view==='all'?'active':'')+'" data-view="all">'+icon('library')+'<span>'+(window.Cloud?.coverTrainingSite ? '素材库' : '全部作品')+'</span><span class="nav-count">'+decks.length+'</span></button>'+webNav+submitNav+professionalCreationNav()+professionalReviewNav()+'</nav><div class="sidebar-divider"></div><button class="nav-item" data-cloud-action="password">'+icon('settings')+'<span>修改登录密码</span></button><button class="nav-item" data-cloud-action="logout">'+icon('arrow')+'<span>退出登录</span></button><div class="sidebar-bottom"><p>'+(singleJudgeCapabilities().canUseOfficialReview?'浏览原库；策划生成与正式评分分轨使用。':'管理员只读浏览；旧写入入口已停用。')+'</p></div></aside>';
 }
 function sidebar() {
   if(singleJudgeMode())return singleJudgeSidebar();

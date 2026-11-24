@@ -305,12 +305,15 @@ class ProfessionalImageClient:
             raise _protocol()
         return path, mime
 
-    def claim(self, worker_id: str, limit: int, lease_seconds: int) -> list[dict]:
+    def claim(self, worker_id: str, limit: int, lease_seconds: int, *, cover_training: bool = False) -> list[dict]:
         if (not isinstance(worker_id, str) or not 1 <= len(worker_id.strip()) <= 200
                 or any(ord(ch) < 32 or 127 <= ord(ch) <= 159 for ch in worker_id)
                 or not _int(limit, 1, 32) or not _int(lease_seconds, 60, 7200)):
             raise WorkerError("领取任务参数无效", 400)
-        value = self._edge("claim", {"worker_id": worker_id, "limit": limit, "lease_seconds": lease_seconds})
+        payload = {"worker_id": worker_id, "limit": limit, "lease_seconds": lease_seconds}
+        if cover_training:
+            payload["cover_training"] = True
+        value = self._edge("claim", payload)
         pages = value.get("pages")
         if not isinstance(pages, list) or len(pages) > limit:
             raise _protocol()
@@ -319,6 +322,8 @@ class ProfessionalImageClient:
             self._expected_target(page)
             if (not isinstance(page.get("hasReferenceImage"), bool) or page["pageId"] in seen
                     or not _int(page.get("position"), 1, 600)):
+                raise _protocol()
+            if "coverTraining" in page and (page["coverTraining"] is not True or not cover_training):
                 raise _protocol()
             seen.add(page["pageId"])
         return pages

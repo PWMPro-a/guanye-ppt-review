@@ -2,11 +2,12 @@
 (() => {
   const config = window.CLOUD_CONFIG;
   const professionalReviewOnly = config?.singleJudge === true && config?.localReview === true;
-  const localCreation = config?.singleJudge === true && config?.localCreation === true;
+  const localCreation = window.Cloud?.localCreation === true;
   if (!config || (!config.aiGatewayUrl && !professionalReviewOnly && !localCreation)) return;
   if (window.GuanyeAICore) window.GuanyeAI = window.GuanyeAICore;
 
   const safe = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+  let generationView = null;
   let generationCleanup = null, generationContext = {planId:'',jobId:'',job:null};
   let planningCleanup = null;
   let reviewCleanups = {uploaded:null,generated:null};
@@ -47,6 +48,12 @@
     const style = document.createElement('style');
     style.id = 'guanye-ai-workspace-style';
     style.textContent = `
+      .ai-workspace-modal{width:min(1180px,calc(100vw - 32px));max-width:calc(100vw - 32px);max-height:calc(100dvh - 32px);overflow:hidden}
+      .ai-workspace-modal .modal-header{padding-bottom:16px}
+      .ai-workspace-modal .modal-footer{margin-top:0}
+      .ai-cover-shell .ai-workspace-toolbar{align-items:center;justify-content:flex-start}
+      .ai-cover-shell .ai-workspace-tabs{width:100%}.ai-cover-shell .ai-workspace-tab{min-height:42px}
+      .ai-cover-back{justify-self:start}.ai-cover-back[hidden]{display:none}
       .ai-workspace-shell{display:grid;gap:18px;min-width:0}
       .ai-workspace-toolbar{display:flex;gap:12px;align-items:end;justify-content:space-between;flex-wrap:wrap;padding:0 2px}
       .ai-workspace-toolbar label{display:grid;gap:6px;min-width:min(360px,100%);font-size:12px;color:var(--muted,#6f7770)}
@@ -66,6 +73,8 @@
       .ai-generation-history [role="status"]:empty{display:none}
       .ai-module-empty{padding:18px;border:1px dashed #cfd8cb;border-radius:10px;color:#6f7770;background:#fff}
       .ai-module-error{color:#a33b32;background:#fff7f5;border:1px solid #f0d7d2;border-radius:10px;padding:12px}
+      .ai-workspace-modal[data-cover-training-review="true"] .ai-uploaded-review-card{display:none}
+      .ai-workspace-modal[data-cover-training-review="true"] .ai-queue-grid{grid-template-columns:minmax(0,1fr)}
       @media(max-width:760px){.ai-queue-grid{grid-template-columns:1fr}.ai-workspace-shell{padding:0}.ai-workspace-toolbar label{min-width:100%}}
     `;
     document.head.appendChild(style);
@@ -75,18 +84,27 @@
     if (decorating || !ready()) return;
     decorating = true;
     try {
+      const hostedTraining = window.Cloud?.coverTrainingSite === true;
+      if (hostedTraining && creationAvailable()) {
+        document.querySelectorAll('[data-ai-action="open"]').forEach(node => {
+          const span = node.querySelector('span');
+          if (span && span.textContent !== '封面训练') span.textContent = '封面训练';
+          else if (!span && !node.classList.contains('nav-item') && node.textContent !== '封面训练') node.textContent = '封面训练';
+        });
+      }
       const sidebar = document.querySelector('.sidebar');
       if (sidebar && !sidebar.querySelector('[data-ai-action="open"]')) {
         const anchor = sidebar.querySelector('[data-cloud-action="password"]')
           || sidebar.querySelector('[data-cloud-action="team"]')
           || sidebar.querySelector('.sidebar-divider');
-        const html = '<button class="nav-item" data-ai-action="open" data-professional-creation="' + String(creationAvailable()) + '">' + (window.icon?.('star') || '') + '<span>' + (creationAvailable() ? '策划 / 生图' : 'AI 工作台') + '</span></button>';
+        const creationLabel = creationAvailable() ? (hostedTraining ? '封面训练' : '策划 / 生图') : 'AI 工作台';
+        const html = '<button class="nav-item" data-ai-action="open" data-professional-creation="' + String(creationAvailable()) + '">' + (window.icon?.('star') || '') + '<span>' + creationLabel + '</span></button>';
         if (anchor) anchor.insertAdjacentHTML('afterend', html);
         else sidebar.insertAdjacentHTML('beforeend', html);
       }
       const actions = document.querySelector('.topbar-actions');
       if (actions && !actions.querySelector('[data-ai-action="open"]')) {
-        actions.insertAdjacentHTML('afterbegin', '<button class="button small" data-ai-action="open" data-professional-creation="' + String(creationAvailable()) + '">' + (creationAvailable() ? '策划 / 生图' : 'AI 工作台') + '</button>');
+        actions.insertAdjacentHTML('afterbegin', '<button class="button small" data-ai-action="open" data-professional-creation="' + String(creationAvailable()) + '">' + (creationAvailable() ? (hostedTraining ? '封面训练' : '策划 / 生图') : 'AI 工作台') + '</button>');
       }
     } finally {
       decorating = false;
@@ -108,6 +126,7 @@
     planningCleanup = null;
     dispose(generationCleanup);
     generationCleanup = null;
+    generationView = null;
   }
 
   function dispose(task) {
@@ -145,6 +164,19 @@
       return null;
     }
     const options = {...baseOptions(), kind:key};
+    if (root.closest('[data-cover-training-review="true"]') && key === 'generated') {
+      const epoch = reviewNavigationEpoch;
+      options.onHumanSaved = () => {
+        if (epoch === reviewNavigationEpoch && root.isConnected && !root.closest('[hidden]')) returnToCover({saved:true});
+      };
+      const refreshLibrary = typeof refreshProfessionalLibrary === 'function' ? refreshProfessionalLibrary : options.onAdmissionSaved;
+      options.onAdmissionSaved = async () => {
+        try { await refreshLibrary?.(); }
+        finally {
+          if (epoch === reviewNavigationEpoch && root.isConnected && !root.closest('[hidden]')) returnToCover();
+        }
+      };
+    }
     if (deckId !== undefined) options.deckId = String(deckId || '');
     if (professionalReviewOnly && key === 'generated' && deckId === undefined) options.deckId = '';
     mounted.reviews[key] = true;
@@ -201,6 +233,7 @@
     else if (name === 'planning') mountPlanning();
     else if (name === 'generation') {
       if (!mounted.generation) mountGeneration();
+      else void generationView?.refreshCover?.();
       if (history && !generationHistoryLoaded && !generationHistoryLoading) void refreshRecentJobs();
     }
   }
@@ -262,27 +295,45 @@
     generationContext = {...generationContext, job:next};
   }
 
-  function openGenerationReview(epoch, expectedJobId, payload) {
+  async function openGenerationReview(epoch, expectedJobId, payload) {
     const modal = document.querySelector('#modal');
     if (epoch !== generationEpoch || !modal?.open || !modal.querySelector('.ai-workspace-shell')) return;
-    if (generationContext.jobId !== expectedJobId || String(payload?.jobId || '') !== expectedJobId) return;
-    const current = generationContext.job;
-    if (!current || String(current.id || '') !== expectedJobId || String(current.status || '') !== 'completed') return;
+    if (generationContext.jobId !== expectedJobId) return;
+    let current = generationContext.job;
+    let target = expectedJobId;
+    if (payload?.coverRootJobId === expectedJobId && window.Cloud?.coverTrainingEnabled === true) {
+      target = String(payload.jobId || '');
+      try {
+        const raw = await window.GuanyeAI.request('/api/ai/generation?job_id=' + encodeURIComponent(target));
+        current = raw?.job || raw;
+      } catch { return; }
+      if (epoch !== generationEpoch || !modal.open || generationContext.jobId !== expectedJobId
+          || (current?.deckId || current?.deck_id) !== payload.coverDeckId) return;
+      modal.dataset.coverTrainingReview = 'true';
+    } else if (String(payload?.jobId || '') !== expectedJobId) return;
+    if (!current || String(current.id || '') !== target || String(current.status || '') !== 'completed') return;
     const deckId = String(current.deckId || current.deck_id || '').trim();
     if (!/^[A-Za-z0-9_-]{1,100}$/.test(deckId)) return;
     const navigationEpoch = ++reviewNavigationEpoch;
     enterTab('reviews', {ensureReviews:false});
-    if (!mounted.reviews.uploaded) mountReview('uploaded');
+    if (modal.dataset.coverTrainingReview !== 'true' && !mounted.reviews.uploaded) mountReview('uploaded');
     mountReview('generated', deckId);
     const focusTarget = document.querySelector('[data-review-focus-target="generated"]');
     requestAnimationFrame(() => {
       if (navigationEpoch !== reviewNavigationEpoch || epoch !== generationEpoch) return;
-      if (!modal.open || document.querySelector('[data-ai-tab="reviews"]')?.getAttribute('aria-selected') !== 'true') return;
+      if (!modal.open || document.querySelector('[data-ai-panel="reviews"]')?.hidden !== false) return;
       if (focusTarget?.isConnected) {
         focusTarget.focus();
         focusTarget.scrollIntoView({block:'start', inline:'nearest'});
       }
     });
+  }
+
+  function returnToCover({saved = false} = {}) {
+    reviewNavigationEpoch++;
+    if (saved) generationView?.showHumanSaved?.();
+    enterTab('generation');
+    if (!generationView?.focusCover?.()) document.querySelector('[data-ai-tab="generation"]')?.focus();
   }
 
   function useGenerationReceipt(payload, state = {}) {
@@ -317,6 +368,7 @@
     reviewNavigationEpoch++;
     dispose(generationCleanup);
     generationCleanup = null;
+    generationView = null;
     const root = document.querySelector('[data-ai-root="generation"]');
     if (!root) {
       mounted.generation = false;
@@ -325,8 +377,16 @@
     if (!generationContext.jobId) {
       const hint = document.createElement('p');
       hint.className = 'ai-module-empty';
-      hint.textContent = '选取已有任务，或在「生成策划」中提交新的任务。';
-      root.replaceChildren(hint);
+      if (window.Cloud?.coverTrainingSite === true) {
+        hint.textContent = '从上方继续已有任务，或者新建一张封面。';
+        const create = document.createElement('button');
+        create.type = 'button'; create.className = 'button primary'; create.textContent = '新建封面';
+        create.addEventListener('click', () => enterTab('planning', {focus:true}));
+        root.replaceChildren(hint, create);
+      } else {
+        hint.textContent = '选取已有任务，或在「生成策划」中提交新的任务。';
+        root.replaceChildren(hint);
+      }
       return;
     }
     const module = window.GuanyeGeneration;
@@ -344,8 +404,14 @@
         autoStart:Boolean(generationContext.planId || generationContext.jobId),
         onUpdate:next => acceptGenerationUpdate(epoch, expectedJobId, next),
         onOpenReview:payload => openGenerationReview(epoch, expectedJobId, payload),
+        onNewCover:() => { reviewNavigationEpoch++; enterTab('planning', {focus:true}); },
+        onOpenLibrary:() => {
+          document.querySelector('#modal')?.close();
+          document.querySelector('.sidebar [data-view="all"]')?.click();
+        },
       });
       generationCleanup = cleanupFor(result);
+      generationView = result;
       if (!generationContext.job) void result?.refresh?.();
     } catch (error) {
       root.innerHTML = '<div class="ai-module-error">' + safe(error?.message || '生成进度加载失败') + '</div>';
@@ -379,8 +445,9 @@
       .join('');
     const creation = creationAvailable();
     const showCreation = creation || !professionalReviewOnly;
-    const title = creation ? '专业创作工作台' : professionalReviewOnly ? '正式评分工作台' : 'AI 工作台';
-    const description = creation
+    const hostedTraining = window.Cloud?.coverTrainingSite === true;
+    const title = hostedTraining ? '观页 · 封面训练工作台' : creation ? '专业创作工作台' : professionalReviewOnly ? '正式评分工作台' : 'AI 工作台';
+    const description = hostedTraining ? '先盘点已评分素材，再做单页封面的独立评审与改稿。' : creation
       ? '策划、生图与评审分轨使用；生成作品完成后进入同一正式评分实例。'
       : professionalReviewOnly
         ? '上传与生成分别评分。可以修改正式分，首次提交时的 AI 对比不会被改写。'
@@ -389,19 +456,20 @@
       ? window.modalHeader(title, description)
       : '<div class="modal-header"><div><h2 id="modal-title">' + safe(title) + '</h2></div></div>';
     const html = header + `
-      <div class="ai-workspace-shell">
+      <div class="ai-workspace-shell${hostedTraining ? ' ai-cover-shell' : ''}">
         <div class="ai-workspace-toolbar">
-          <label>当前作品（可选）<select class="text-input" id="guanye-ai-deck">${deckOptions}</select></label>
+          ${hostedTraining ? '' : `<label>当前作品（可选）<select class="text-input" id="guanye-ai-deck">${deckOptions}</select></label>`}
           <div class="ai-workspace-tabs" role="tablist" aria-label="AI 操作区">
-            <button id="guanye-ai-tab-reviews" type="button" class="ai-workspace-tab" role="tab" aria-selected="true" aria-controls="guanye-ai-panel-reviews" tabindex="0" data-ai-tab="reviews">AI 评审</button>
-            ${showCreation ? `<button id="guanye-ai-tab-planning" type="button" class="ai-workspace-tab" role="tab" aria-selected="false" aria-controls="guanye-ai-panel-planning" tabindex="-1" data-ai-tab="planning">生成策划</button>
-            <button id="guanye-ai-tab-generation" type="button" class="ai-workspace-tab" role="tab" aria-selected="false" aria-controls="guanye-ai-panel-generation" tabindex="-1" data-ai-tab="generation">生成进度</button>` : ''}
+            ${hostedTraining ? '' : '<button id="guanye-ai-tab-reviews" type="button" class="ai-workspace-tab" role="tab" aria-selected="true" aria-controls="guanye-ai-panel-reviews" tabindex="0" data-ai-tab="reviews">AI 评审</button>'}
+            ${showCreation ? `<button id="guanye-ai-tab-planning" type="button" class="ai-workspace-tab" role="tab" aria-selected="false" aria-controls="guanye-ai-panel-planning" tabindex="-1" data-ai-tab="planning">${hostedTraining ? '新建封面' : '生成策划'}</button>
+            <button id="guanye-ai-tab-generation" type="button" class="ai-workspace-tab" role="tab" aria-selected="false" aria-controls="guanye-ai-panel-generation" tabindex="-1" data-ai-tab="generation">${hostedTraining ? '训练任务' : '生成进度'}</button>` : ''}
           </div>
         </div>
-        <section id="guanye-ai-panel-reviews" class="ai-workspace-panel" role="tabpanel" aria-labelledby="guanye-ai-tab-reviews" data-ai-panel="reviews">
+        <section id="guanye-ai-panel-reviews" class="ai-workspace-panel" role="tabpanel" ${hostedTraining ? 'aria-label="封面评分"' : 'aria-labelledby="guanye-ai-tab-reviews"'} data-ai-panel="reviews">
+          ${hostedTraining ? '<button type="button" class="button small ai-cover-back" data-ai-action="back-to-cover">返回训练任务</button>' : ''}
           <div class="ai-queue-grid">
-            <div class="ai-operation-card"><h3>已上传作品队列</h3><div data-ai-root="reviews-uploaded"></div></div>
-            <div class="ai-operation-card" role="region" aria-label="生成作品评审" tabindex="-1" data-review-focus-target="generated"><h3>生成作品队列</h3><div data-ai-root="reviews-generated"></div></div>
+            <div class="ai-operation-card ai-uploaded-review-card"><h3>已上传作品队列</h3><div data-ai-root="reviews-uploaded"></div></div>
+            <div class="ai-operation-card" role="region" aria-label="生成作品评审" tabindex="-1" data-review-focus-target="generated"><h3>${hostedTraining ? '本版封面评分' : '生成作品队列'}</h3><div data-ai-root="reviews-generated"></div></div>
           </div>
         </section>
         ${showCreation ? `<section id="guanye-ai-panel-planning" class="ai-workspace-panel" role="tabpanel" aria-labelledby="guanye-ai-tab-planning" data-ai-panel="planning" hidden>
@@ -410,7 +478,7 @@
         <section id="guanye-ai-panel-generation" class="ai-workspace-panel" role="tabpanel" aria-labelledby="guanye-ai-tab-generation" data-ai-panel="generation" hidden>
           <div class="ai-operation-card">
             <div class="ai-generation-history">
-              <label>生成任务<select class="text-input" id="guanye-ai-generation-job" disabled></select></label>
+              <label>${hostedTraining ? '选择训练任务' : '生成任务'}<select class="text-input" id="guanye-ai-generation-job" disabled></select></label>
               <button class="button small" type="button" data-ai-action="refresh-generation">刷新任务</button>
               <div id="guanye-ai-generation-history-status" role="status"></div>
             </div>
@@ -418,7 +486,7 @@
           </div>
         </section>` : ''}
       </div>
-      <div class="modal-footer"><button class="button primary" data-action="close-modal">完成</button></div>`;
+      <div class="modal-footer"><button class="button primary" data-action="close-modal">关闭工作台</button></div>`;
     if (window.showModal) window.showModal(html, 'ai-workspace-modal');
     else {
       const modal = document.querySelector('#modal');
@@ -427,7 +495,7 @@
       modal.showModal();
     }
     const modal = document.querySelector('#modal');
-    enterTab('reviews');
+    enterTab(hostedTraining && creation ? 'generation' : 'reviews');
     document.querySelector('#guanye-ai-deck')?.addEventListener('change', rebindDeckModules);
     modal.querySelector('#guanye-ai-generation-job')?.addEventListener('change', event => selectGenerationJob(event.target.value));
   }
@@ -439,6 +507,7 @@
       openWorkspace();
       return;
     }
+    if (event.target.closest('[data-ai-action="back-to-cover"]')) { returnToCover(); return; }
     if (event.target.closest('[data-ai-action="refresh-generation"]')) {
       void refreshRecentJobs({force:true});
       return;

@@ -26,6 +26,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
 PLANNER_MODEL = "gpt-6.2-sol"
+from cloud import cover_training
+
 MAX_FILE_BYTES = 12 * 1024 * 1024
 MAX_REFERENCE_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_DECODED_BYTES = 32 * 1024 * 1024
@@ -1286,15 +1288,37 @@ def _load_current_plan(ctx: Any, workspace_id: str, plan_id: str) -> dict[str, A
         raise ValueError(str(exc) or "策划读取失败") from exc
 
 
+def _cover_style_facts(ctx: Any, reference: dict[str, Any], visual: dict[str, Any],
+                       raw_plan: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return cover_training.style_facts(raw_plan.get("coverStyleEvidence"))
+    except ValueError:
+        repaired = _chat_json(ctx, cover_training.style_evidence_messages(reference, visual))
+        evidence = repaired.get("coverStyleEvidence") if isinstance(repaired, dict) else None
+        return cover_training.style_facts(evidence if isinstance(evidence, dict) else repaired)
+
+
 def analyze_handler(ctx: Any) -> dict[str, Any]:
     user_id, workspace_id, _ = _context_ids(ctx)
     request = _normalize_request(_body(ctx))
     uploads = _collect_uploads(request)
     plan_id = str(uuid.uuid4())
     sources = _prepare_sources(ctx, workspace_id, plan_id, request, uploads)
-    references = _load_reference_candidates(ctx, workspace_id, sources["visuals"], sources["warnings"])
+    pinned = getattr(ctx, "cover_visual_input", None)
+    if pinned is None:
+        references = _load_reference_candidates(ctx, workspace_id, sources["visuals"], sources["warnings"])
+    else:
+        reference, visual = pinned
+        references = [reference]
+        sources["visuals"] = [visual]
     messages = _planning_messages(request, sources, references)
+    if pinned is not None:
+        messages[0]["content"] += cover_training.STYLE_ANALYSIS_INSTRUCTIONS
     raw_plan = _chat_json(ctx, messages)
+    if pinned is not None:
+        ctx.cover_style_facts = _cover_style_facts(ctx, reference, visual, raw_plan)
+        # The operator selected the only visual reference. The model cannot swap or omit it.
+        raw_plan["referenceDeckIds"] = [reference["deckId"]]
     plan = _normalize_plan(raw_plan, request, references, sources["sourceManifest"], sources["generationStyleImages"], sources["warnings"])
     try:
         saved = _rpc_data(ctx.rpc(

@@ -230,6 +230,7 @@ class GatewayConfig:
     model_id: str = DEFAULT_MODEL_ID
     model_api_key: str = field(default="", repr=False)
     worker_token: str = field(default="", repr=False)
+    cover_training_site: bool = False
 
     def __post_init__(self):
         if self.storage_bucket != STORAGE_BUCKET:
@@ -286,6 +287,7 @@ class GatewayConfig:
             model_id=_env_text("GUANYE_MODEL_ID", DEFAULT_MODEL_ID),
             model_api_key=_env_text("GUANYE_MODEL_API_KEY") or _env_text("GUANYE_AI_API_KEY"),
             worker_token=_env_text("GUANYE_WORKER_TOKEN"),
+            cover_training_site=_env_text("GUANYE_COVER_TRAINING_SITE") == "1",
         )
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -548,6 +550,8 @@ class RequestContext:
         self.query = query
 
     def rpc(self, name: str, params: dict[str, Any] | None = None, privileged: bool = False) -> Any:
+        if name == "ai_generation_page_reference_path" and self._gateway.config.cover_training_site:
+            name = "ai_generation_cover_reference_info"
         return self._gateway.rpc(self._principal(), name, params or {}, privileged=privileged)
 
     def select(self, table: str, query: dict[str, Any] | None = None, privileged: bool = False) -> Any:
@@ -1023,7 +1027,7 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
             raise AuthenticationError()
         return token.strip()
 
-    def _read_body(self) -> dict[str, Any]:
+    def _read_body(self, limit: int | None = None) -> dict[str, Any]:
         if (self.headers.get("Transfer-Encoding") or "").strip():
             raise ValueError("不支持分块请求体")
         raw_length = (self.headers.get("Content-Length") or "0").strip()
@@ -1033,7 +1037,7 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
             raise ValueError("Content-Length 无效") from exc
         if length < 0:
             raise ValueError("Content-Length 无效")
-        if length > self.server.gateway.config.max_body_bytes:
+        if length > min(limit or self.server.gateway.config.max_body_bytes, self.server.gateway.config.max_body_bytes):
             raise BodyTooLarge()
         if length == 0:
             return {}
@@ -1068,10 +1072,17 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
                 principal = self.server.gateway.authenticate_worker(
                     principal, next((self.headers.get(name) for name in WORKER_HEADER_ALIASES if self.headers.get(name)), None)
                 )
-            body = self._read_body() if method in BODY_METHODS else {}
+            training_site = self.server.gateway.config.cover_training_site
+            limit = None
+            if training_site:
+                from cloud.professional_creation import ANALYZE, MAX_ANALYZE_BODY, MAX_EDIT_BODY
+                limit = MAX_ANALYZE_BODY if path == ANALYZE else MAX_EDIT_BODY
+            body = self._read_body(limit) if method in BODY_METHODS else {}
             query_raw = urllib.parse.parse_qs(
                 urllib.parse.urlsplit(self.path).query, keep_blank_values=True
             )
+            if training_site and any(len(values) != 1 for values in query_raw.values()):
+                raise ValueError("请求参数不能重复")
             query = {key: values[0] for key, values in query_raw.items() if values}
             context = self.server.gateway.make_context(principal, body, query)
             result = handler(context)
@@ -1101,9 +1112,13 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
             self._send(500, {"error": "服务内部错误", "code": "internal_error"}, origin)
 
 
-def build_router(modules: Sequence[Any] | None = None) -> Router:
+def build_router(modules: Sequence[Any] | None = None, *, gateway: Gateway | None = None) -> Router:
     router = Router()
-    register_ai_modules(router, modules)
+    if gateway is not None and gateway.config.cover_training_site:
+        from cloud.professional_creation import configure_training_site
+        configure_training_site(router, gateway)
+    else:
+        register_ai_modules(router, modules)
     return router
 
 
@@ -1127,10 +1142,11 @@ class ReviewWorkerContext(RequestContext):
     def rpc(self, name: str, params: dict[str, Any] | None = None, privileged: bool = False) -> Any:
         # This is the last check before the queue's atomic claim RPC. Any claim
         # already inside that RPC may finish; no later lane claim may start.
-        if name == "ai_review_claim_jobs" and _review_worker_should_stop(
-            self._stop_event, self._stop_requested
-        ):
-            return []
+        if name == "ai_review_claim_jobs":
+            if _review_worker_should_stop(self._stop_event, self._stop_requested):
+                return []
+            if self._gateway.config.cover_training_site:
+                name = "single_judge_cover_review_claim"
         return super().rpc(name, params, privileged=privileged)
 
     def storage_get(self, path: str) -> bytes:
@@ -1461,7 +1477,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         gateway = Gateway(config)
         if args.review_worker:
             return _serve_review_worker_cli(gateway)
-        router = build_router()
+        router = build_router(gateway=gateway)
         server = GatewayHTTPServer((config.host, config.port), gateway, router)
     except GatewayError as exc:
         LOGGER.error("Gateway startup failed: %s", exc.detail)

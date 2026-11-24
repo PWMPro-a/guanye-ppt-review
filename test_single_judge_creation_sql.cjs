@@ -31,7 +31,9 @@ const migrationNames=[
  '20261122_24_single_judge_submission','20261122_25_image_workers_default',
  '20261122_26_single_judge_score_revisions','20261122_27_single_judge_review_workspace',
  '20261122_28_single_judge_admission','20261122_29_single_judge_generation_references',
-  '20261122_30_single_judge_creation','20261122_34_single_judge_owner_activation'
+  '20261122_30_single_judge_creation','20261122_31_single_judge_image_runtime', '20261122_32_single_judge_legacy_backfill',
+  '20261122_33_single_judge_review_queue','20261122_34_single_judge_owner_activation',
+  '20261122_35_single_judge_intake','20261123_38_cover_training','20261123_39_cover_after_human','20261124_40_cover_progress'
 ];
 const migrations=migrationNames.map(name=>fs.readFileSync(`cloud/migrations/${name}.sql`,'utf8'));
 
@@ -60,7 +62,7 @@ async function bootstrap(){
    select jsonb_build_object('email',current_setting('request.jwt.claim.email',true))
   $$;
   create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint);
-  create table storage.objects(id uuid primary key,name text not null,bucket_id text not null, unique(bucket_id,name));
+  create table storage.objects(id uuid primary key,name text not null,bucket_id text not null,owner_id text, unique(bucket_id,name));
   alter table storage.objects enable row level security;
   create function storage.foldername(text) returns text[] language sql as $$
    select string_to_array($1,'/')
@@ -326,6 +328,188 @@ assert service.handle('POST','/api/ai/generation',source['judge'],'fixture',{'pl
   await query(db,"update public.members set role='admin' where workspace_id=$1 and user_id=$2",[W,OWNER]);
   await asAuthenticated(db,OTHER);
   await rejects(input(db,makePath(W,uuid(),'content','pdf')),'42501');
+  // M38 uses the same deployed sequence and real PostgreSQL roles/queue.
+  await asAuthenticated(db,OWNER);
+  await rejects(get(db,'single_judge_cover_inventory',[W,'',100]),'42501');
+  await resetRole(db);
+  await query(db,'insert into guanye_internal.cover_training_settings(workspace_id,enabled) values($1,true)',[W]);
+  await query(db,"update public.workspaces set settings=$2 where id=$1",[W,j({maxScore:5,dimensions:[{id:'visual'},{id:'layout'}]})]);
+  // Avoid unrelated jobs taking the sole slot in this pilot fixture.
+  await query(db,"update public.ai_generation_jobs set status='failed' where workspace_id=$1",[W]);
+  const newItem=async (label,sha,withPage=true)=>{
+   const deck='cover-'+label, path=previewPath(W,deck);
+   await resetRole(db);
+   await addDeck(db,W,deck,{kind:'uploaded',allowed:true,paths:[path],title:label});
+   await addStorageObject(db,path);
+   await query(db,'insert into guanye_internal.uploaded_source_provenance(deck_id,workspace_id,source_group_sha256) values($1,$2,$3)',[deck,W,sha]);
+   const [v]=await query(db,'select public.ai_review_deck_version($1,$2) as dv,public.ai_review_rubric_version($1) as rv',[W,deck]);
+   await asAuthenticated(db,OWNER);
+   await get(db,'single_judge_submit_bundle',[W,j({deckId:deck,deckVersion:v.dv,rubricVersion:v.rv,units:[{scope:'deck',scores:{visual:4,layout:4}},...(withPage?[{scope:'page',unitId:'page-1',scores:{visual:4,layout:4}}]:[])]})]);
+   return {deck,path};
+  };
+  const held=await newItem('held','00'+'1'.repeat(62));
+  const heldCopy=await newItem('held-copy','00'+'1'.repeat(62));
+  const revisionSha='01'+'9'.repeat(62), ambiguousSha='01'+'8'.repeat(62);
+  const revisedSource=await newItem('held-revised',revisionSha);
+  const ambiguous=await newItem('uncertain-source',ambiguousSha);
+  const calibration=await newItem('calibration','01'+'2'.repeat(62));
+  const extra=await newItem('second-cal','02'+'3'.repeat(62));
+  const deckOnly=await newItem('deck-only','03'+'3'.repeat(62),false);
+  await resetRole(db);
+  await query(db,'insert into guanye_internal.cover_training_source_review values($1,$2,$3),($1,$4,null)',[W,revisionSha,'00'+'1'.repeat(62),ambiguousSha]);
+  await asAuthenticated(db,OTHER);
+  await rejects(get(db,'single_judge_cover_inventory',[W,'',100]),'42501');
+  await asAuthenticated(db,OWNER);
+  await rejects(get(db,'single_judge_cover_inventory',[W_OTHER,'',100]),'42501');
+  const inventory=await get(db,'single_judge_cover_inventory',[W,'',100]);
+  assert.ok(inventory.rows.find(x=>x.id===held.deck).eligible);
+  assert.equal(inventory.rows.find(x=>x.id===revisedSource.deck).sourceGroupSha256,'00'+'1'.repeat(62));
+  assert.equal(inventory.rows.find(x=>x.id===ambiguous.deck).exclusion,'sourceReviewExcluded');
+  assert.equal(inventory.rows.find(x=>x.id===deckOnly.deck).eligible,false);
+  assert.equal(await get(db,'single_judge_cover_publish_style',[W,'# 团队封面\n保持留白',null]),1);
+  assert.equal(await get(db,'single_judge_cover_publish_style',[W,'# 新版本',null]),2);
+  assert.equal(await get(db,'single_judge_cover_publish_style',[W,null,1]),1);
+  const readContext=deck=>get(db,'single_judge_cover_pair_context',[W,deck]);
+  const heldContext=await readContext(held.deck);
+  assert.deepEqual(heldContext.cases.map(x=>x.id).sort(),[calibration.deck,extra.deck].sort());
+  assert.ok(!heldContext.cases.some(x=>x.id===heldCopy.deck || x.id===revisedSource.deck || x.id===ambiguous.deck));
+  const recordPair=ctx=>get(db,'single_judge_cover_pair_save',[W,ctx.id,j(ctx),'gpt-6.2-sol:cover-rubric-v1',j({baseline:{visual:5,layout:5},assisted:{visual:5,layout:5}})]);
+  const heldPair=await recordPair(heldContext);
+  await resetRole(db);
+  await rejects(query(db,'delete from guanye_internal.cover_training_source_review where workspace_id=$1 and original_sha256=$2',[W,revisionSha]),'22023');
+  await asAuthenticated(db,OWNER);
+  await rejects(get(db,'single_judge_cover_correct',[W,heldPair,'禁止留出组回流']),'22023');
+  const trainPair=await recordPair(await readContext(calibration.deck));
+  const correction=await get(db,'single_judge_cover_correct',[W,trainPair,'标注留白不足']);
+  assert.equal((await readContext(held.deck)).cases.find(x=>x.id===calibration.deck).correctionId,correction);
+
+  const coverPlan=uuid();
+  const coverRefs=[{deckId:calibration.deck,imagePaths:[calibration.path]}];
+  const coverDraft=draft({references:coverRefs,pages:[{...draft().pages[0],narrativeRole:'cover',styleReferenceDeckIds:[calibration.deck]}]});
+  await get(db,'single_judge_cover_save_plan',[W,coverPlan,j(coverDraft),1,'[]']);
+  await confirm(db,coverPlan,1,null);
+  const coverSnapshot=await get(db,'single_judge_planning_confirmed',[W,coverPlan]);
+  const coverPage={...page,references:[calibration.deck],outline:{...page.outline,styleReferenceDeckIds:[calibration.deck],narrativeRole:'cover'}};
+  const createCover=(path=calibration.path)=>get(db,'single_judge_cover_start',[W,coverPlan,'generated-f1f1f1f1f1f1f1f1f1f1f1f1',j(coverSnapshot),coverSnapshot.title,'style','{}',j(coverSnapshot.references),j([coverPage]),calibration.deck,path]);
+  await rejects(createCover(manual.path),'22023');
+  const rootJob=await createCover();
+  const rootPage=rootJob.pages[0].id;
+  assert.equal((await createCover()).id,rootJob.id);
+  await asService(db);
+  assert.deepEqual(await get(db,'ai_generation_claim_pages',[W,OWNER,'legacy worker',1,300]),[]);
+  await resetRole(db);
+  const [busyJob]=await query(db,`insert into public.ai_generation_jobs(workspace_id,user_id,plan_id,deck_id,plan_snapshot,status)
+   values($1,$2,'capacity-fixture','cover-capacity-fixture','{}','running') returning id`,[W_OTHER,LEGACY_OWNER]);
+  await query(db,`with busy_pages as (
+   insert into public.ai_generation_pages(job_id,workspace_id,position,storage_path,status,lease_expires_at)
+   select $1,$2,i,'capacity-'||i,'running',now()+interval '5 minutes' from generate_series(1,20) as i returning id
+  ) insert into guanye_internal.cover_training_candidates(page_id,workspace_id,root_page_id,ordinal,reference_deck_id,reference_path)
+   select id,$2,id,0,'fixture','fixture' from busy_pages`,[busyJob.id,W_OTHER]);
+  await asService(db);
+  assert.deepEqual(await get(db,'single_judge_cover_claim_pages',[W,OWNER,'cover worker',1,300]),[],
+   'active training leases in another workspace share the project-wide channel cap');
+  await resetRole(db);
+  await query(db,'delete from public.ai_generation_jobs where id=$1',[busyJob.id]);
+  await asService(db);
+  const [leased]=await get(db,'single_judge_cover_claim_pages',[W,OWNER,'cover worker',1,300]);
+  assert.equal(leased.pageId,rootPage); assert.equal(leased.coverTraining,true); assert.equal(leased.attempts,1);
+  assert.equal(await get(db,'ai_generation_page_reference_path',[W,OWNER,rootPage,leased.leaseToken]),calibration.path);
+  await resetRole(db);
+  await query(db,'update public.decks set ai_allowed=false where workspace_id=$1 and id=$2',[W,calibration.deck]);
+  await asService(db);
+  assert.equal(await get(db,'ai_generation_page_reference_path',[W,OWNER,rootPage,leased.leaseToken]),null);
+  await resetRole(db);
+  await query(db,'update public.decks set ai_allowed=true where workspace_id=$1 and id=$2',[W,calibration.deck]);
+
+  const finishCandidate=async (lease)=>{
+   await resetRole(db);
+   await addStorageObject(db,lease.storagePath);
+   await asService(db);
+   return get(db,'ai_generation_page_succeed',[W,OWNER,lease.pageId,lease.leaseToken,lease.storagePath,'image/png','a'.repeat(64),1024,576]);
+  };
+  await finishCandidate(leased);
+  const status=()=>get(db,'single_judge_cover_status',[W,rootJob.id]);
+  await asAuthenticated(db,OWNER);
+  assert.equal((await status()).candidates[0].feedback,null,'AI results hidden before independent human score');
+  const args={keep:'保留层级',change:'扩大正文留白',doNotChange:'逐字文案'};
+  const revise=(pageId,record,key)=>get(db,'single_judge_cover_revise',[W,pageId,record,key,j(args)]);
+  await rejects(revise(rootPage,uuid(),uuid()),'42501');
+  const scoreCandidate=async (lease,scores)=>{
+   const {pageId,deckId}=lease;
+   await resetRole(db);
+   const [v]=await query(db,'select public.ai_review_deck_version($1,$2) as dv,public.ai_review_rubric_version($1) as rv',[W,deckId]);
+   const nodes=()=>query(db,`select id,status,attempts from public.ai_review_jobs
+    where workspace_id=$1 and deck_id=$2 and scope='page' and unit_id=$3`,[W,deckId,pageId]);
+   assert.deepEqual(await nodes(),[]);
+   await asAuthenticated(db,OWNER);
+   const submit=values=>get(db,'single_judge_submit_bundle',[W,j({deckId,deckVersion:v.dv,rubricVersion:v.rv,units:[
+    {scope:'deck',scores:values},{scope:'page',unitId:pageId,scores:values},
+   ]})]);
+   const bundle=await submit(scores);
+   const waiting=(await status()).candidates.find(x=>x.pageId===pageId).feedback;
+   assert.deepEqual(waiting.human,scores); assert.equal(waiting.recordId,null); assert.ok(waiting.decisionId);
+   await resetRole(db);
+   const jobs=await nodes(); assert.equal(jobs.length,1); assert.equal(jobs[0].status,'queued');
+   await asService(db);
+   assert.deepEqual(await get(db,'single_judge_cover_review_claim',[W,OWNER,'uploaded',1]),[]);
+   const [job]=await get(db,'single_judge_cover_review_claim',[W,OWNER,'generated',1]);
+   assert.equal(job.id,jobs[0].id); assert.equal(job.attempts,1);
+   const done=await get(db,'ai_review_finish_attempt',[W,OWNER,job.id,1,'completed',j({scores:{visual:4,layout:3,match:5},reasons:['需要更清晰的层级']}),null,false]);
+   assert.equal(done.matchedSubmissions,1); assert.ok(done.recordId);
+   await asAuthenticated(db,OWNER);
+   const feedback=(await status()).candidates.find(x=>x.pageId===pageId).feedback;
+   assert.equal(feedback.recordId,done.recordId); assert.deepEqual(feedback.human,scores); assert.ok(feedback.decisionId);
+   if(pageId===rootPage){
+    const corrected={...scores,layout:scores.layout+1};
+    await submit(corrected);
+    const fixed=(await status()).candidates.find(x=>x.pageId===pageId).feedback;
+    assert.equal(fixed.recordId,feedback.recordId); assert.deepEqual(fixed.human,scores);
+    assert.deepEqual(fixed.formalScores,corrected); assert.notEqual(fixed.decisionId,feedback.decisionId);
+    await resetRole(db); assert.equal((await nodes()).length,1); await asAuthenticated(db,OWNER);
+   }
+   return {...feedback, submissionId:bundle.submissionIds[1]};
+  };
+  const rootFeedback=await scoreCandidate(leased,{visual:4,layout:3,match:5});
+  await rejects(get(db,'single_judge_admit',[W,rootFeedback.submissionId,rootFeedback.decisionId]),'42501');
+  const key=uuid();
+  const revised=await revise(rootPage,rootFeedback.recordId,key);
+  assert.equal(revised.candidates.length,2);
+  assert.equal((await revise(rootPage,rootFeedback.recordId,key)).candidates[1].pageId,revised.candidates[1].pageId);
+  await rejects(revise(rootPage,rootFeedback.recordId,uuid()),'22023');
+  assert.equal(revised.candidates[0].status,'succeeded');
+  await asService(db);
+  const [variant]=await get(db,'single_judge_cover_claim_pages',[W,OWNER,'cover worker',1,300]);
+  assert.equal(variant.pageId,revised.candidates[1].pageId);
+  assert.ok(variant.prompt.startsWith(leased.prompt)); assert.match(variant.prompt,/扩大正文留白/);
+  assert.equal(await get(db,'ai_generation_page_reference_path',[W,OWNER,variant.pageId,variant.leaseToken]),calibration.path);
+  await finishCandidate(variant);
+  const after=await scoreCandidate(variant,{visual:5,layout:5,match:5});
+  const selected=await get(db,'single_judge_cover_select',[W,variant.pageId,after.decisionId,'使用更大的留白',true]);
+  assert.equal(selected.selectedPageId,variant.pageId);
+  const admitted=await get(db,'single_judge_admit',[W,after.submissionId,after.decisionId]);
+  assert.equal(admitted.admitted,true);
+  assert.equal((await get(db,'single_judge_admit',[W,after.submissionId,after.decisionId])).entryId,admitted.entryId);
+  assert.equal(selected.candidates[1].feedback.libraryVisible,false);
+  const savedProgress=await status();
+  assert.equal(savedProgress.candidates[0].feedback.libraryVisible,false);
+  assert.equal(savedProgress.candidates[1].feedback.libraryVisible,true);
+  const planMemory=await get(db,'single_judge_cover_style',[W]);
+  assert.equal(planMemory.examples[0].reason,'使用更大的留白');
+  const currentRoot=(await status()).candidates[0].feedback;
+  assert.equal((await get(db,'single_judge_cover_select',[W,rootPage,currentRoot.decisionId,'回看首稿',false])).selectedPageId,rootPage);
+  assert.equal((await get(db,'single_judge_cover_select',[W,variant.pageId,after.decisionId,'使用更大的留白',true])).selectedPageId,variant.pageId);
+  assert.equal((await revise(variant.pageId,after.recordId,uuid())).candidates.length,3);
+  await asService(db);
+  const [last]=await get(db,'single_judge_cover_claim_pages',[W,OWNER,'cover worker',1,300]);
+  await finishCandidate(last);
+  const lastFeedback=await scoreCandidate(last,{visual:5,layout:5,match:2});
+  await rejects(revise(last.pageId,lastFeedback.recordId,uuid()),'22023');
+  await rejects(get(db,'single_judge_cover_select',[W,last.pageId,lastFeedback.decisionId,'文案错漏',false]),'22023');
+  await rejects(get(db,'ai_generation_retry_pages',[W,OWNER,last.jobId,j([last.pageId])]),'42501');
+  const final=await status();
+  assert.equal(final.candidates[0].image.path,leased.storagePath);
+  assert.equal(final.selectedPageId,variant.pageId);
+  console.log('PASS M38: pilot opt-in, inventory, group isolation, corrections, style rollback, first generation, score gate, two revisions, selection, preserved first draft');
   console.log('PASS M30: admin/reviewer owner parity, non-owner guards, legacy path, insert-only RLS, M24/M29 references and generation queue');
  } finally{await db.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

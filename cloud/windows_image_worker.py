@@ -1047,7 +1047,9 @@ class LeaseHeartbeat:
 
 
 class WindowsWorker:
-    def __init__(self, config: WorkerConfig, gateway: GatewayClient | None = None, exe: ExeClient | None = None):
+    def __init__(self, config: WorkerConfig, gateway: GatewayClient | None = None, exe: ExeClient | None = None, *, cover_channel=None):
+        self.cover_channel = cover_channel
+        self.cover_only = cover_channel is not None
         self.config = config
         self.state = LocalState(config.state_dir)
         auth_provider = SupabaseTokenProvider(config.auth) if config.auth is not None else None
@@ -1058,7 +1060,7 @@ class WindowsWorker:
             worker_token=config.worker_token,
             auth_provider=auth_provider,
         )
-        self.exe = exe or ExeClient(
+        self.exe = exe if self.cover_only else exe or ExeClient(
             config.exe_base,
             config.exe_token,
             self.state,
@@ -1107,6 +1109,7 @@ class WindowsWorker:
                     try:
                         claimed = self.gateway.claim(
                             self.config.worker_id, limit, self.config.lease_seconds,
+                            **({"cover_training": True} if self.cover_channel else {}),
                         )
                     except WorkerError as exc:
                         claim_failed = True
@@ -1164,9 +1167,20 @@ class WindowsWorker:
             "outline": page.get("outline"),
         }
         try:
+            if self.cover_only and page.get("coverTraining") is not True:
+                raise WorkerError("试点 Worker 拒绝普通生图页面；未发送模型")
             with LeaseHeartbeat(self.gateway, page, self.config.lease_seconds):
                 artifact = self.state.load_spool(page_id)
-                if artifact is None:
+                if artifact is None and page.get("coverTraining") is True:
+                    if page.get("attempts") != 1:
+                        raise WorkerError("训练生图此前可能已受理；未重复发送")
+                    if not self.cover_channel or page.get("hasReferenceImage") is not True:
+                        raise WorkerError("训练生图未配置，或原参考已失效；未发送模型")
+                    reference = self.gateway.reference_image(page)
+                    # A new lease cannot dispatch an already attempted training job.
+                    artifact = self.cover_channel.generate(page, reference)
+                    self.state.save_spool(page_id, *artifact)
+                elif artifact is None:
                     with self._active_lock:
                         self._active_jobs[job["jobId"]] = job
                     pages = self._job_pages(page)

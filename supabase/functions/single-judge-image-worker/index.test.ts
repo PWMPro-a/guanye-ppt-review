@@ -206,6 +206,26 @@ test("claim keeps M25 rows unchanged and uses fixed workspace/actor, no retry on
   assert.equal(h.calls.filter(([name]) => name === "ai_generation_claim_pages").length, 1);
 });
 
+test("cover claim is explicit, limited to twenty and never falls back to the standard queue", async () => {
+  const h = harness();
+  const cover = { ...CLAIM, cover_training: true, limit: 20 };
+  for (const body of [{ ...cover, cover_training: false }, { ...cover, cover_training: "true" }, { ...cover, limit: 21 }]) {
+    await failure(await h.request(body), 400, "INVALID_REQUEST");
+  }
+  assert.deepEqual(h.calls, []);
+  const row = { jobId: JOB, pageId: PAGE, leaseToken: LEASE, coverTraining: true };
+  h.rpc.set("single_judge_cover_claim_pages", ok([row]));
+  assert.deepEqual(await (await h.request(cover)).json(), { pages: [row] });
+  assert.deepEqual(h.calls.at(-1), ["single_judge_cover_claim_pages", {
+    p_workspace: WORKSPACE, p_actor: ACTOR, p_worker_id: CLAIM.worker_id, p_limit: 20, p_lease_seconds: 1800,
+  }]);
+  h.calls.length = 0;
+  h.rpc.set("single_judge_cover_claim_pages", problem("PGRST202", PRIVATE_ERROR));
+  await failure(await h.request(cover), 503, "UPSTREAM_UNAVAILABLE");
+  assert.equal(h.calls.filter(([name]) => name === "single_judge_cover_claim_pages").length, 1);
+  assert.equal(h.calls.filter(([name]) => name === "ai_generation_claim_pages").length, 0);
+});
+
 test("heartbeat projects only ok and maps missing page / expired lease / SQL conflicts", async () => {
   const h = harness();
   const cmd = { ...BASE, action: "heartbeat", lease_seconds: 7200 };

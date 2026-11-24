@@ -227,6 +227,11 @@
     .gp-history-footer { margin-top:10px; display:flex; justify-content:flex-end; }
     .gp-history-empty { border:1px dashed #c9d4cf; border-radius:14px; padding:15px; color:var(--muted); background:#fff; font-size:13px; }
     .gp-history-error { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    .gp-training { margin: 20px 0; }
+    .gp-training summary { cursor:pointer; font-weight:750; }
+    .gp-training [role=status] { min-height:1.5em; margin:12px 0; }
+    .gp-training [data-training-error=true] { color:#a3332b; }
+    .gp-training .gp-actions { flex-wrap:wrap; margin:12px 0; }
     .gp-result[hidden] { display:none; }
     .gp-result { margin-top:28px; }
     .gp-banner { display:flex; flex-wrap:wrap; align-items:center; gap:10px; border-radius:16px; padding:14px 16px;
@@ -265,7 +270,8 @@
       .gp-history-item { grid-template-columns:1fr; }
       .gp-history-actions { justify-content:flex-start; }
     }
-  `;
+
+    .gp-reference-preview { display:block; width:min(100%,520px); max-height:280px; object-fit:contain; border:1px solid var(--line); border-radius:14px; background:#f4f7f4; margin-top:10px; }`;
 
   function mount(root, opts = {}) {
     if (!root || (typeof root.attachShadow !== 'function' && !root.shadowRoot)) {
@@ -355,8 +361,218 @@
     let selectedPlanId = null;
     let planEpoch = 0;
     let historyEpoch = 0;
+    let selectedCoverReference = null;
+    let currentCoverStyleEvidence = null;
     let destroyed = false;
     const history = {items: [], nextCursor: null, loaded: false, loading: false, error: ''};
+
+    const hostedTraining = window.Cloud?.coverTrainingSite === true;
+    let trainingReady = !hostedTraining;
+    if (hostedTraining) {
+      $('#gp-title').textContent = '封面训练';
+      $('.gp-intro').textContent = '先盘点已评分素材，再用 Sol 对照和人工复核。生成仅限单页封面，每次改稿都由人确认。';
+      const pages = form.elements.pageCount;
+      pages.value = '1';
+      pages.max = '1';
+      pages.readOnly = true;
+      pages.nextElementSibling.textContent = '试点固定为单页封面。';
+      form.classList.add('gp-hidden');
+      $('.gp-history').classList.add('gp-hidden');
+    }
+    if (window.Cloud?.coverTrainingEnabled === true) {
+      const pane = element('details', 'gp-card gp-training');
+      pane.open = hostedTraining;
+      pane.append(element('summary', '', '封面训练 · 素材盘点与 Sol 对照'));
+      const hint = element('p', 'gp-meta', '先盘点旧分。有合格样本后，每次只手动跑一张图的两次 Sol 评审。留出样本不能用于纠错。');
+      hint.setAttribute('role', 'status');
+      if (hostedTraining) hint.textContent = '读取素材盘点后，才会开放单页策划与人工改稿。';
+      const bar = element('div', 'gp-actions');
+      const entries = element('div');
+      const referencePicker = element('div', 'gp-reference-picker gp-card');
+      const rows = new Map(), pairs = new Map();
+      let coverReferences = [], referencesLoaded = false;
+      let cursor = '', rubric = '', running = false, complete = false;
+      let referencesLoading = false;
+      const request = (path, body) => api.request('/api/ai/training/cover-' + path, body === undefined ? {method:'GET'} : {method:'POST',body});
+      const button = (text, run) => {
+        const node = element('button', 'ghost', text);
+        node.type = 'button';
+        node.disabled = running;
+        node.addEventListener('click', run);
+        return node;
+      };
+      function download(name, value) {
+        const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], {type:'application/json'}));
+        const link = element('a');
+        link.href = url; link.download = name; link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+      }
+      function renderReferencePicker() {
+        if (!hostedTraining) return;
+        referencePicker.replaceChildren();
+        referencePicker.append(element('h3', '', '第一步：选择 Sol 要学习的素材库封面'));
+        referencePicker.append(element('p', 'gp-meta', '这张原图会在策划阶段由 Sol 实际读图，并在生成阶段再次作为同一张视觉参考。未选择前不能生成策划。'));
+        if (!coverReferences.length) {
+          referencePicker.append(element('p', 'gp-meta', '暂无符合条件的授权高分封面；请先检查评分口径、授权状态或素材来源。'));
+          return;
+        }
+        const select = element('select', 'gp-reference-select');
+        select.setAttribute('aria-label', '选择素材库视觉参考');
+        select.append(Object.assign(element('option', '', '请选择一张原图'), {value: ''}));
+        coverReferences.forEach(ref => {
+          const score = ref.score == null ? '无分数' : `均分 ${ref.score}`;
+          select.append(Object.assign(element('option', '', `${ref.title || ref.deckId} · ${score}`), {value: ref.deckId}));
+        });
+        select.value = selectedCoverReference?.deckId || '';
+        select.addEventListener('change', () => {
+          selectedCoverReference = coverReferences.find(ref => ref.deckId === select.value) || null;
+          if (selectedCoverReference && hostedTraining && !trainingReady && !destroyed) {
+            trainingReady = true;
+            form.classList.remove('gp-hidden');
+            $('.gp-history').classList.remove('gp-hidden');
+            rules.hidden = false;
+            void loadHistory({reset: true});
+          }
+          renderReferencePicker();
+          updateActionState();
+        });
+        referencePicker.append(select);
+        if (selectedCoverReference?.imagePaths?.[0]) {
+          const image = element('img', 'gp-reference-preview');
+          image.alt = `素材库参考：${selectedCoverReference.title || selectedCoverReference.deckId}`;
+          image.loading = 'lazy';
+          referencePicker.append(image);
+          void window.Cloud.imageUrl(selectedCoverReference.imagePaths[0]).then(url => { image.src = url; }).catch(() => {
+            image.replaceWith(element('p', 'gp-meta', '原图预览暂不可用；为避免误用，不能继续策划。'));
+            selectedCoverReference = null; updateActionState();
+          });
+          referencePicker.append(element('p', 'gp-meta', `来源：授权素材库 · ${selectedCoverReference.completeReviewCount || 0} 个完整评分 · 仅用于学习视觉，不复制原文`));
+        }
+      }
+      async function loadCoverReferences() {
+        if (!hostedTraining || referencesLoaded || referencesLoading || destroyed) return;
+        referencesLoading = true;
+        renderReferencePicker();
+        try {
+          const referencePayload = await request('references');
+          coverReferences = Array.isArray(referencePayload?.references) ? referencePayload.references : [];
+          referencesLoaded = true;
+          renderReferencePicker();
+        } catch (error) {
+          referencesLoaded = true;
+          referencePicker.replaceChildren(
+            element('h3', '', '第一步：选择 Sol 要学习的素材库封面'),
+            element('p', 'gp-meta', `读取素材库原图失败：${error?.message || '请稍后重试'}`),
+            button('重新读取参考图', () => { referencesLoaded = false; void loadCoverReferences(); }),
+          );
+        } finally {
+          referencesLoading = false;
+          updateActionState();
+        }
+      }
+      const task = fn => async () => {
+        if (running) return;
+        running = true;
+        for (const node of pane.querySelectorAll('button')) node.disabled = true;
+        try { delete hint.dataset.trainingError; await fn(); }
+        catch (e) { hint.dataset.trainingError = 'true'; hint.textContent = e.message || '训练操作失败'; }
+        finally { running = false; if (!destroyed) { for (const node of pane.querySelectorAll('button')) node.disabled = false; draw(); } }
+      };
+      const exclusionText = {notAuthorized:'未授权 AI', notCover:'非封面', unknownSource:'无可信来源',
+        sourceReviewExcluded:'人工排除来源', legacyUnverifiedRubric:'旧分口径未确认',
+        noCurrentPageScore:'没有现行逐页分', unavailablePreview:'授权预览不可用'};
+      const held = row => parseInt(row.sourceGroupSha256?.slice(0, 2), 16) % 5 === 0;
+      const deltas = (row, pair) => pair ? ['visual','layout'].map(k => ({k, diff:Math.abs(row.human[k] - pair.assisted[k]),
+        bad:row.human[k] <= 3 && pair.assisted[k] >= 4})) : [];
+      const priority = row => Math.max(0, ...deltas(row, pairs.get(row.id)).map(x => x.diff + (x.bad ? 10 : 0)));
+      function draw() {
+        const load = button(cursor ? '继续盘点' : '读取素材盘点', task(async () => {
+          const inventory = await request('inventory?limit=40&after=' + encodeURIComponent(cursor));
+          if (rubric && rubric !== inventory.rubricVersion) {
+            rows.clear(); pairs.clear(); cursor = ''; rubric = '';
+            throw new Error('评分标准已经更新，请重新盘点。');
+          }
+          if (hostedTraining && !trainingReady && selectedCoverReference && !destroyed) {
+            trainingReady = true;
+            form.classList.remove('gp-hidden');
+            $('.gp-history').classList.remove('gp-hidden');
+            rules.hidden = false;
+            void loadHistory({reset: true});
+          }
+          rubric = inventory.rubricVersion;
+          for (const {pair, ...row} of inventory.rows || []) {
+            rows.set(row.id, row);
+            if (pair && !pairs.has(row.id)) pairs.set(row.id, pair);
+          }
+          cursor = inventory.nextAfter || '';
+          complete = !cursor;
+          const kept = [...rows.values()].filter(row => row.eligible);
+          hint.textContent = `已盘点 ${rows.size} 套：逐页可用 ${kept.length} 张（留出 ${kept.filter(held).length} 张）。`;
+        }));
+        load.disabled = running || complete;
+        const exportData = button('下载盘点与留出预测 JSON', () => {
+          download('cover-inventory.json', {rubricVersion:rubric, rows:[...rows.values()]});
+          const sampled = [...pairs.values()].filter(pair => held(rows.get(pair.id)));
+          download('cover-predictions.json', {rubricVersion:rubric, modelConfigId:sampled[0]?.modelConfigId || 'gpt-6.2-sol:cover-rubric-v1', rows:sampled});
+        });
+        exportData.disabled = running || !complete;
+        bar.replaceChildren(load, exportData);
+        const sorted = [...rows.values()].sort((a,b) => priority(b)-priority(a) || Number(b.eligible)-Number(a.eligible));
+        entries.replaceChildren(...sorted.map(row => {
+          const line = element('div', 'gp-meta');
+          const pair = pairs.get(row.id);
+          line.append(element('strong', '', row.id + ' · ' + (row.eligible ? (held(row) ? '留出' : '校准') : (exclusionText[row.exclusion] || '不可用于对照'))
+            + (row.eligible && row.pageTypeEvidence === 'first-preview-proxy' ? '（首张待确认）' : '')));
+          if (row.eligible) line.append(button(pair ? '重跑 Sol 对照（2 次）' : '运行 Sol 对照（2 次）', task(async () => {
+            if (!window.confirm('向 Sol 发送这张封面和获授权的校准案例，并运行两次独立评审？')) return;
+            const next = await request('pair', {deck_id:row.id});
+            pairs.set(row.id, next);
+            hint.textContent = '已保存独立对照；差异较大的记录会排在前面。';
+          })));
+          if (pair) {
+            const format = scores => `${scores.visual} / ${scores.layout}`;
+            line.append(element('span', '', ` · 人评 ${format(row.human)} · baseline ${format(pair.baseline)} · assisted ${format(pair.assisted)}`));
+            if (priority(row) >= 1) line.append(element('p', '', ['visual','layout'].map(key => pair.reasons.assisted[key]).join('；')));
+            if (priority(row) >= 1 && !held(row) && !pair.correctionId) {
+              line.append(button('确认人工纠错', task(async () => {
+                const reason = window.prompt('填写纠错原因（可留空），以现有逐页人工分为准。', '');
+                if (reason === null) return;
+                Object.assign(pair, await request('correct', {pair_id:pair.pairId, reason}));
+              })));
+            }
+          }
+          return line;
+        }));
+      }
+      const markdown = element('textarea');
+      markdown.rows = 4;
+      markdown.maxLength = 12000;
+      markdown.placeholder = '负责人：粘贴团队风格 Markdown';
+      markdown.setAttribute('aria-label', '团队风格 Markdown');
+      const previous = element('input');
+      previous.type = 'number'; previous.min = '1'; previous.placeholder = '恢复版本号';
+      previous.setAttribute('aria-label','恢复版本号');
+      const publish = button('发布规则', task(async () => {
+        if (!window.confirm('确认规则只参考训练组和已人工确认的新作，没有使用留出组？')) return;
+        const data = await request('style', {markdown:markdown.value});
+        hint.textContent = `已发布团队风格 v${data.version}。`;
+      }));
+      const restore = button('恢复规则版本', task(async () => {
+        const data = await request('style', {previous:Number(previous.value)});
+        hint.textContent = `已恢复团队风格 v${data.version}。`;
+      }));
+      const rules = element('div');
+      rules.append(element('h3', '', '团队风格规则（仅负责人）'), markdown, publish, previous, restore);
+      rules.hidden = hostedTraining;
+      // In the hosted pilot the actual reference image is the first gate.
+      // Do not hide it behind the optional old-library inventory: otherwise a
+      // user can start a plan without ever giving Sol a real style sample.
+      pane.append(hint, referencePicker, bar, entries, rules);
+      pane.addEventListener('toggle', () => { if (trainingReady) rules.hidden = false; });
+      form.before(pane);
+      draw();
+      if (hostedTraining) void loadCoverReferences();
+    }
 
     function emit(name, detail) {
       if (typeof window.CustomEvent !== 'function') return;
@@ -384,7 +600,7 @@
         button.disabled = disabled;
         if (action === 'save') button.textContent = busy && busyAction === 'save' ? '保存中…' : '保存草稿';
         if (action === 'confirm') button.textContent = busy && busyAction === 'confirm' ? '确认中…' : '确认并锁定策划';
-        if (action === 'generate') button.textContent = busy && busyAction === 'generate' ? '提交中…' : '提交生成';
+        if (action === 'generate') button.textContent = busy && busyAction === 'generate' ? '提交中…' : (button.dataset.gpLabel || '提交生成');
       });
       shadow.querySelectorAll('button[data-gp-history-action], button[data-gp-history-open]').forEach(button => {
         const action = button.dataset.gpHistoryAction;
@@ -578,6 +794,7 @@
       if (busy || state.phase === 'confirmed') return;
       const epoch = ++planEpoch;
       setBusy(true, 'analyze');
+      currentCoverStyleEvidence = null;
       setStatus('正在提取资料并请求 GPT-6.2 Sol 策划…');
       try {
         const total = {bytes: 0, count: 0};
@@ -595,10 +812,15 @@
           style_files: styleFiles,
           reference_images: referenceImages,
         };
+        if (hostedTraining) {
+          if (!selectedCoverReference?.deckId) throw new Error('请先在上方选择一张素材库原图，Sol 才能真正学习它的视觉风格。');
+          body.reference_deck_id = selectedCoverReference.deckId;
+        }
         const payload = await api.request('/api/ai/planning/analyze', {method: 'POST', body});
         if (destroyed || epoch !== planEpoch) return;
         if (!payload?.planId || !payload?.plan) throw new Error('策划接口返回内容不完整');
         const revision = Number(payload.revision || 1);
+        currentCoverStyleEvidence = payload.coverStyleEvidence || null;
         state = {phase: 'draft', planId: payload.planId, revision, plan: payload.plan, confirmed: null};
         upsertHistoryItem({
           planId: payload.planId,
@@ -623,7 +845,7 @@
       if (busy) return;
       planEpoch += 1;
       form.reset();
-      form.elements.pageCount.value = '8';
+      form.elements.pageCount.value = hostedTraining ? '1' : '8';
       state = {phase: 'idle', planId: null, revision: 0, plan: null, confirmed: null};
       selectedPlanId = null;
       result.hidden = true;
@@ -639,6 +861,20 @@
         if (value !== null && value !== undefined && String(value).trim()) wrap.append(element('span', 'gp-tag', String(value)));
       }
       return wrap;
+    }
+
+    function renderCoverEvidence(container, visual) {
+      if (!visual || !visual.path) return;
+      const card = element('div', 'gp-banner success');
+      card.append(element('strong', '', '本次实际学习的素材库原图'), document.createTextNode(`：${visual.title || visual.deckId} · SHA-256 ${String(visual.sha256 || '').slice(0, 12)}…`));
+      const image = element('img', 'gp-reference-preview'); image.alt = '本次锁定的素材库视觉参考'; image.loading = 'lazy';
+      card.append(image);
+      void window.Cloud.imageUrl(visual.path).then(url => { image.src = url; }).catch(() => {
+        image.replaceWith(element('p', 'gp-meta', '本次锁定的素材原图预览暂不可用。'));
+      });
+      const facts = visual.facts || {}; const line = [facts.typography, facts.composition, facts.whitespace].filter(Boolean).join('；');
+      if (line) card.append(element('p', 'gp-meta', `Sol 已记录：${line}`));
+      container.append(card);
     }
 
     function field(labelText, value, onInput, multiline = false, rows = 3) {
@@ -680,6 +916,7 @@
       } else {
         sourcesCard.append(element('p', 'gp-meta', '实际上传：仅文字输入'));
       }
+      renderCoverEvidence(stack, plan.coverStyleEvidence || payload?.coverStyleEvidence || currentCoverStyleEvidence);
       const actualReferences = plan.references || [];
       if (actualReferences.length) {
         for (const reference of actualReferences) {
@@ -914,7 +1151,6 @@
       }
     }
 
-
     async function confirmPlan() {
       if (busy || !state.plan) return;
       const title = String(state.plan.title || '').trim();
@@ -933,6 +1169,7 @@
           body: {plan_id: targetPlanId, expected_revision: state.revision, draft: state.plan},
         });
         if (destroyed || epoch !== planEpoch || state.planId !== targetPlanId) return;
+        currentCoverStyleEvidence = payload?.coverStyleEvidence || currentCoverStyleEvidence;
         state.phase = 'confirmed';
         state.confirmed = payload;
         const revised = Number(payload?.revision);
@@ -964,6 +1201,7 @@
       const banner = element('div', 'gp-banner');
       banner.append(element('strong', '', '已确认 · 不可变版本'), document.createTextNode(`版本 ${payload.version ?? '—'} · 已锁定逐页文案、页序、风格和参考作品`));
       card.append(banner);
+      renderCoverEvidence(card, currentCoverStyleEvidence);
       const versionField = field('版本 ID', payload.versionId || '', () => {}, false);
       versionField.querySelector('input').readOnly = true;
       card.append(versionField);
@@ -975,23 +1213,55 @@
       card.append(element('p', 'gp-meta', styleImageCount ? `已锁定生成风格图：${styleImageCount} 张私有路径；若下游不可用，应回退到已核实 refs.imagePaths。` : '未生成直接可用于生图的风格图；下游应回退到已核实 refs.imagePaths。'));
       card.append(element('p', 'gp-meta', '生成队列读取使用 service-role RPC，客户端不能修改此版本。'));
       const actions = element('div', 'gp-actions');
-      const submit = element('button', 'primary', '提交生成');
+      const cover = window.Cloud?.coverTrainingEnabled === true && state.plan?.pages?.length === 1
+        && state.plan.pages[0].narrativeRole === 'cover';
+      const refs = (payload.payload || state.plan)?.references || [];
+      const choices = refs.flatMap(ref => (ref.imagePaths || []).slice(0, 1).map(path => ({ref, path})));
+      const select = element('select');
+      const submit = element('button', 'primary', cover ? '提交封面训练首稿' : '提交生成');
+      if (cover) {
+        const label = element('label', 'gp-meta', '选择一张已确认的高分原作封面参考');
+        const empty = element('option', '', choices.length ? '请选择' : '没有可用原作参考，请重新策划');
+        empty.value = '';
+        select.append(empty);
+        choices.forEach(({ref}, i) => {
+          const option = element('option', '', ref.title || ref.deckId);
+          option.value = String(i);
+          select.append(option);
+        });
+        label.append(select);
+        actions.append(label);
+      }
       submit.type = 'button';
       submit.dataset.gpAction = 'generate';
-      submit.addEventListener('click', submitGeneration);
+      if (cover) submit.dataset.gpLabel = '提交封面训练首稿';
+      if (hostedTraining && !cover) {
+        card.append(element('p', 'gp-meta', '试点只支持单页封面，请新建一份封面策划。'));
+        result.append(card);
+        return;
+      }
+      submit.addEventListener('click', () => {
+        if (!cover) return submitGeneration();
+        const selected = select.value === '' ? null : choices[Number(select.value)];
+        if (!selected) return setStatus('请先选择一张确认的原作参考。', 'error');
+        return submitGeneration(selected);
+      });
       actions.append(submit);
       card.append(actions);
       result.append(card);
     }
 
-    async function submitGeneration() {
+    async function submitGeneration(reference) {
       if (busy || !state.planId || state.phase !== 'confirmed') return;
       const targetPlanId = state.planId;
       const epoch = planEpoch;
       setBusy(true, 'generate');
       setStatus('正在提交生成队列…');
       try {
-        const payload = await api.request('/api/ai/generation', {method: 'POST', body: {plan_id: targetPlanId}});
+        const endpoint = reference ? '/api/ai/generation/cover/start' : '/api/ai/generation';
+        const body = {plan_id: targetPlanId};
+        if (reference) Object.assign(body, {reference_deck_id: reference.ref.deckId, reference_path: reference.path});
+        const payload = await api.request(endpoint, {method: 'POST', body});
         if (destroyed || epoch !== planEpoch || state.planId !== targetPlanId) return;
         const jobId = payload?.jobId || payload?.job_id || payload?.id;
         if (jobId) {
@@ -1024,6 +1294,7 @@
           const payload = await api.request(`/api/ai/planning?plan_id=${encodeURIComponent(requested)}`, {method: 'GET'});
           if (destroyed || epoch !== planEpoch) return null;
           const planIdValue = String(payload?.planId || requested);
+          currentCoverStyleEvidence = payload?.coverStyleEvidence || null;
           if (payload?.status === 'confirmed' && payload?.confirmed?.payload) {
             const plan = payload.draft || payload.confirmed.payload;
             state = {phase: 'confirmed', planId: planIdValue, revision: Number(payload.revision) || 0, plan, confirmed: payload.confirmed};
@@ -1052,7 +1323,7 @@
               revision: state.revision,
               createdAt: payload.createdAt || '',
             });
-            renderPlan({warnings: []});
+            renderPlan(payload);
             setStatus('已打开草稿，可继续编辑、保存或确认。', 'success');
             emit('guanye:planning-opened', {planId: planIdValue, status: 'draft', revision: state.revision});
           } else {
@@ -1078,7 +1349,7 @@
       },
     };
     root.__guanyePlanningController = controller;
-    const autoLoad = () => { if (!destroyed) void loadHistory({reset: true}); };
+    const autoLoad = () => { if (!destroyed && trainingReady) void loadHistory({reset: true}); };
     if (typeof queueMicrotask === 'function') queueMicrotask(autoLoad);
     else setTimeout(autoLoad, 0);
     return controller;
