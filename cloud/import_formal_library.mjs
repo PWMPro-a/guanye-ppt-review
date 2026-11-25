@@ -181,8 +181,14 @@ for (const deck of decks) {
   const chosen = chooseLabel(rows);
   if (chosen) selected.push({ deck, rows, chosen });
 }
-console.log(`source decks=${decks.length} reviewRows=${reviewRows.length} scoredDecks=${selected.length}`);
+const selectedPageCount = selected.reduce((sum, entry) => sum + (Array.isArray(entry.deck.data?.images) ? entry.deck.data.images.length : 0), 0);
+const selectedScores = selected.flatMap(entry => Object.values(entry.chosen.data?.scores || {}).map(Number).filter(Number.isFinite));
+const lowScoreCount = selectedScores.filter(score => score <= 2).length;
+const highScoreCount = selectedScores.filter(score => score >= 4).length;
+console.log(`source decks=${decks.length} reviewRows=${reviewRows.length} scoredDecks=${selected.length} scoredPages=${selectedPageCount} lowScores=${lowScoreCount} highScores=${highScoreCount}`);
 if (selected.length !== 127) throw new Error(`expected 127 scored decks, got ${selected.length}`);
+if (selectedPageCount !== 983) throw new Error(`expected 983 scored pages, got ${selectedPageCount}`);
+if (lowScoreCount < 1 || highScoreCount < 1) throw new Error(`expected both low and high formal scores, got low=${lowScoreCount} high=${highScoreCount}`);
 
 let completed = 0;
 const jobs = [];
