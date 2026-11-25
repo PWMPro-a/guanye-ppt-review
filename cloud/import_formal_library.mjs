@@ -6,8 +6,10 @@
 import crypto from 'node:crypto';
 import process from 'node:process';
 
+const sourceServiceRoleKey = String(process.env.SOURCE_SERVICE_ROLE_KEY || '').trim();
 const required = [
-  'SOURCE_URL', 'SOURCE_ANON_KEY', 'SOURCE_EMAIL', 'SOURCE_PASSWORD',
+  'SOURCE_URL',
+  ...(sourceServiceRoleKey ? [] : ['SOURCE_ANON_KEY', 'SOURCE_EMAIL', 'SOURCE_PASSWORD']),
   'SOURCE_WORKSPACE_ID', 'TARGET_URL', 'TARGET_ANON_KEY', 'TARGET_EMAIL',
   'TARGET_PASSWORD', 'TARGET_WORKSPACE_ID'
 ];
@@ -21,6 +23,7 @@ const source = {
   email: process.env.SOURCE_EMAIL,
   password: process.env.SOURCE_PASSWORD,
   workspace: process.env.SOURCE_WORKSPACE_ID,
+  serviceRoleKey: sourceServiceRoleKey || null,
 };
 const target = {
   url: process.env.TARGET_URL.replace(/\/+$/, ''),
@@ -168,7 +171,12 @@ function provenance(records, selected, deck, sourceImageDigests, sourceGroupSha2
 }
 
 console.log(`formal import start run=${runId}`);
-const [sourceAuth, targetAuth] = await Promise.all([login(source), login(target)]);
+const [sourceAuth, targetAuth] = await Promise.all([
+  source.serviceRoleKey
+    ? Promise.resolve({ url: source.url, key: source.serviceRoleKey, token: source.serviceRoleKey, userId: 'service-role' })
+    : login(source),
+  login(target),
+]);
 console.log(`authenticated sourceUser=${sourceAuth.userId} targetUser=${targetAuth.userId}`);
 const [decks, reviewRows] = await Promise.all([
   restJson(sourceAuth, `/rest/v1/decks?select=id,workspace_id,source_kind,data&workspace_id=eq.${encodeURIComponent(source.workspace)}&order=id&limit=1000`, {}, 'source decks'),

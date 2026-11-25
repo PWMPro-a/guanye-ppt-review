@@ -97,3 +97,26 @@
 - 模型通道根因已定位并处理：`/etc/guanye/training-gateway.env` 原先含 4 处 CRLF，模型 URL 和凭据尾部携带 `\r`；现已备份原文件、统一为 LF、保持 `0600`，并重启训练网关与评审 Worker。非 Python 的 `curl` 直连探针已分别验证纯文本请求 `200`，以及带 1440×960 原图的 PNG 视觉请求 `200`、耗时约 117 秒、返回完整 `coverStyleEvidence`。
 - 画图/长文本策划超过原先 180 秒模型超时。训练环境已设置 `GUANYE_MODEL_TIMEOUT_SECONDS=420`；随后从网页重新选择素材库原图并完成一次真实策划，页面显示「本次实际学习的素材库原图」、SHA-256 和 Sol 的字体/构图/留白依据。新策划标题为「潮汐带生态监测｜克制型海岸观测封面」。截图：`E:/guanye-ppt-review/.test-output/guanye-training-cover-visual-new-r8.png`，SHA-256 `A3A58E09E98D307A7F6C1932BAE7F05E4E97F26E101308F2887CD54766061374`。
 - 这一步验证了真实读图策划；尚未在本轮发起新的计费生图，正式站仍未切换。
+
+## Node-only operations
+
+The migration, function deployment, and formal-library import paths can run with Node.js only; no Python is required.
+
+```powershell
+# Apply one migration through the Supabase Management API
+$env:SUPABASE_ACCESS_TOKEN = '<management token>'
+$env:PROJECT_REF = '<target project ref>'
+$env:MIGRATION_FILE = 'cloud/migrations/20261125_42_ppt_training_scope.sql'
+node cloud/apply_migration.mjs
+
+# Deploy one Edge Function
+$env:FUNCTION_SLUG = 'single-judge-import'
+$env:FUNCTION_DIR = 'supabase/functions/single-judge-import'
+node cloud/deploy_function.mjs
+
+# Import the scored formal library (source may be read-only via service role)
+$env:SOURCE_SERVICE_ROLE_KEY = '<source service role key>'
+node cloud/import_formal_library.mjs
+```
+
+`SOURCE_SERVICE_ROLE_KEY` replaces `SOURCE_ANON_KEY`, `SOURCE_EMAIL`, and `SOURCE_PASSWORD` for read-only source access. The target still requires a workspace member account (`TARGET_EMAIL` / `TARGET_PASSWORD`) because the import function validates a user JWT. Secrets must stay in process environment variables and must never be committed.
