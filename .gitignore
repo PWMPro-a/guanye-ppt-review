@@ -7,3 +7,4 @@ cloud/private*
 cloud/bootstrap.sql
 node_modules/
 supabase/.temp/
+cloud/local-import-report-*.json
