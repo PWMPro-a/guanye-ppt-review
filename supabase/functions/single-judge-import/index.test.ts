@@ -846,3 +846,46 @@ test("没有 Content-Length 时也在读取过程中限制 JSON 大小", async (
   assert.equal((await responseBody(response)).error.code, "REQUEST_TOO_LARGE");
   assert.deepEqual(fixture.calls, []);
 });
+
+
+test("正式素材库训练导入通过签名上传并调用服务端发布 RPC", async () => {
+  const body = {
+    action: "library-prepare",
+    workspaceId: WORKSPACE_ID,
+    deckId: DECK_ID,
+    title: "正式素材",
+    metadata: { name: "正式素材", style: "深蓝", trainingImport: { schema: "formal-library-import-v1" } },
+    pages: [
+      { id: "page-1", name: "第一页.jpg", position: 1 },
+      { id: "page-2", name: "第二页.jpg", position: 2 },
+    ],
+    pageSizes: [1024, 2048],
+    pageHashes: PREVIEW_HASHES,
+    review: { mode: "deck", scores: { visual: 2, layout: 1 }, updatedAt: "2026-11-25T00:00:00Z" },
+    sourceGroupSha256: "a".repeat(64),
+  };
+  const fixture = makeHarness({ objects: new Map() });
+  const prepare = await createHandler(fixture.deps)(makeRequest(body));
+  assert.equal(prepare.status, 200);
+  const prepared = await responseBody(prepare);
+  assert.deepEqual(prepared.uploads.map((item: { path: string }) => item.path), [
+    WORKSPACE_ID + "/" + DECK_ID + "/preview/1.png",
+    WORKSPACE_ID + "/" + DECK_ID + "/preview/2.png",
+  ]);
+  assert.equal(fixture.serviceRpcCalls.length, 0);
+  assert.equal(fixture.signedCalls.length, 2);
+
+  const publishFixture = makeHarness({ objects: new Map([
+    [WORKSPACE_ID + "/" + DECK_ID + "/preview/1.png", 1024],
+    [WORKSPACE_ID + "/" + DECK_ID + "/preview/2.png", 2048],
+  ]) });
+  const publish = await createHandler(publishFixture.deps)(makeRequest({ ...body, action: "library-publish" }));
+  assert.equal(publish.status, 200);
+  assert.deepEqual(await responseBody(publish), { ok: true, deckId: DECK_ID, idempotent: false });
+  assert.equal(publishFixture.serviceRpcCalls[0].name, "single_judge_publish_training_library");
+  assert.deepEqual(publishFixture.serviceRpcCalls[0].args.review, body.review);
+  assert.deepEqual(publishFixture.serviceRpcCalls[0].args.deck.images, [
+    { id: "page-1", name: "第一页.jpg", path: WORKSPACE_ID + "/" + DECK_ID + "/preview/1.png", thumbPath: WORKSPACE_ID + "/" + DECK_ID + "/preview/1.png", position: 1 },
+    { id: "page-2", name: "第二页.jpg", path: WORKSPACE_ID + "/" + DECK_ID + "/preview/2.png", thumbPath: WORKSPACE_ID + "/" + DECK_ID + "/preview/2.png", position: 2 },
+  ]);
+});

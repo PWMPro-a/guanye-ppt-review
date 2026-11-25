@@ -11,6 +11,7 @@ window.Cloud = (() => {
     location.protocol==='https:'&&aiGatewayUrl===location.origin&&location.pathname.startsWith('/training/');
   const coverTrainingEnabled=coverTrainingSite||config.localCoverTraining===true;
   const localCreation=singleJudgeEnabled&&(config.localCreation===true||coverTrainingSite);
+  const pptTrainingEnabled=localCreation&&config.pptTraining!==false;
   const LOCAL_CREATION_MAX_JSON_CHARS=36*1024*1024;
   const LOCAL_UUID=/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
   const WEB_INTAKE_TABLE='single_judge_intake';
@@ -501,6 +502,20 @@ async function deckRows(){if(!aiGatewayUrl){sourceKindAvailable=false;return all
       if([...params.keys()].sort().join(',')!==['job_id','page_id','download'].filter(key=>params.has(key)).sort().join(','))throw new Error('本地生成素材请求参数无效');
       requireUuid(params.get('job_id'),'生成任务 ID');requireUuid(params.get('page_id'),'生成页面 ID');
       if(params.has('download')&&params.get('download')!=='1')throw new Error('本地生成素材下载参数无效');
+    }else if(pptTrainingEnabled && (url.pathname==='/api/ai/training/ppt-counts' || url.pathname==='/api/ai/training/ppt-samples')){
+      noBody();
+      if(url.pathname==='/api/ai/training/ppt-counts'){ expectMethod('GET'); noQuery(); }
+      else {
+        expectMethod('GET');
+        const params=query(['scope','deckId','pageId','limit']);
+        const scope=params.get('scope')||'deck';
+        const id=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(value);
+        if(!['deck','page','cover'].includes(scope))throw new Error('PPT 训练范围无效');
+        if(scope==='deck' && (params.has('deckId')||params.has('pageId')))throw new Error('整套训练不接受 deckId 或 pageId');
+        if(scope!=='deck' && !id(params.get('deckId')))throw new Error('单页或封面训练需要 deckId');
+        if(params.has('pageId')&&!id(params.get('pageId')))throw new Error('页面 ID 无效');
+        if(params.has('limit')&&(!/^\d{1,4}$/.test(params.get('limit'))||+params.get('limit')<1||+params.get('limit')>2000))throw new Error('limit 必须在 1–2000 之间');
+      }
     }else if(coverTrainingEnabled && (url.pathname==='/api/ai/generation/cover' ||
         url.pathname.startsWith('/api/ai/generation/cover/') || url.pathname.startsWith('/api/ai/training/cover-'))){
       const endpoint=url.pathname;
@@ -663,5 +678,5 @@ async function deckRows(){if(!aiGatewayUrl){sourceKindAvailable=false;return all
     return payload;
   }
   if(aiGatewayUrl||localReview||localCreation){const aiCore=Object.freeze({request:aiRequest,get available(){return true;},get baseUrl(){return aiGatewayUrl||(localCreation?location.origin:'');}});window.GuanyeAICore=aiCore;window.GuanyeAI=aiCore;window.GUANYE_AI_BASE=aiGatewayUrl;}
-  return {ready,request,imageUrl,fileUrl,original,refreshSummary,refreshTeam,changePassword,submitWebIntake,listMyIntakes,get summary(){return summary;},get member(){return member;},get team(){return singleJudgeEnabled?{members:[],reviews:[]}:{members,reviews:teamReviews};},get mode(){return singleJudgeEnabled?(singleJudgeAccess?.mode||null):'team';},get role(){return singleJudgeEnabled?(singleJudgeAccess?.role||null):(member?.role||null);},get access(){return singleJudgeAccess?{mode:singleJudgeAccess.mode,role:singleJudgeAccess.role}:null;},get capabilities(){return singleJudgeCapabilities();},get localImport(){return localImport;},get localCreation(){return localCreation;},get coverTrainingSite(){return coverTrainingSite;},get coverTrainingEnabled(){return localCreation&&coverTrainingEnabled;},get webIntakeAvailable(){return Boolean(singleJudgeEnabled&&singleJudgeAccess&&singleJudgeCapabilities()?.canSubmitMaterials&&client&&config.workspaceId);},get professionalImportAvailable(){return Boolean(singleJudgeEnabled&&singleJudgeCapabilities()?.canSubmitMaterials&&localImport);},get professionalReviewAvailable(){return Boolean(localReview&&singleJudgeCapabilities()?.canUseOfficialReview);},get professionalComparisonAvailable(){return Boolean(localReview&&singleJudgeCapabilities()?.canReadComparison);},get localCreationAvailable(){return Boolean(localCreation&&singleJudgeCapabilities()?.canUseAiWorkspace);},get aiAvailable(){return singleJudgeEnabled?Boolean(['judge','admin'].includes(singleJudgeAccess?.role)&&singleJudgeCapabilities()?.canUseAiWorkspace&&(aiGatewayUrl||localCreation)&&window.GuanyeAI):Boolean(aiGatewayUrl&&window.GuanyeAI);},get aiGatewayUrl(){return aiGatewayUrl;},async logout(){singleJudgeAccess=null;member=null;await client.auth.signOut();location.reload();}};
+  return {ready,request,imageUrl,fileUrl,original,refreshSummary,refreshTeam,changePassword,submitWebIntake,listMyIntakes,get summary(){return summary;},get member(){return member;},get team(){return singleJudgeEnabled?{members:[],reviews:[]}:{members,reviews:teamReviews};},get mode(){return singleJudgeEnabled?(singleJudgeAccess?.mode||null):'team';},get role(){return singleJudgeEnabled?(singleJudgeAccess?.role||null):(member?.role||null);},get access(){return singleJudgeAccess?{mode:singleJudgeAccess.mode,role:singleJudgeAccess.role}:null;},get capabilities(){return singleJudgeCapabilities();},get localImport(){return localImport;},get localCreation(){return localCreation;},get coverTrainingSite(){return coverTrainingSite;},get coverTrainingEnabled(){return localCreation&&coverTrainingEnabled;},get pptTrainingEnabled(){return pptTrainingEnabled;},get webIntakeAvailable(){return Boolean(singleJudgeEnabled&&singleJudgeAccess&&singleJudgeCapabilities()?.canSubmitMaterials&&client&&config.workspaceId);},get professionalImportAvailable(){return Boolean(singleJudgeEnabled&&singleJudgeCapabilities()?.canSubmitMaterials&&localImport);},get professionalReviewAvailable(){return Boolean(localReview&&singleJudgeCapabilities()?.canUseOfficialReview);},get professionalComparisonAvailable(){return Boolean(localReview&&singleJudgeCapabilities()?.canReadComparison);},get localCreationAvailable(){return Boolean(localCreation&&singleJudgeCapabilities()?.canUseAiWorkspace);},get aiAvailable(){return singleJudgeEnabled?Boolean(['judge','admin'].includes(singleJudgeAccess?.role)&&singleJudgeCapabilities()?.canUseAiWorkspace&&(aiGatewayUrl||localCreation)&&window.GuanyeAI):Boolean(aiGatewayUrl&&window.GuanyeAI);},get aiGatewayUrl(){return aiGatewayUrl;},async logout(){singleJudgeAccess=null;member=null;await client.auth.signOut();location.reload();}};
 })();

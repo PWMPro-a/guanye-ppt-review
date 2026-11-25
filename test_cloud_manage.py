@@ -41,7 +41,7 @@ class FakeApi:
             row=dict(self.state)
             row['migration_history']=self.history_table_exists
             return [row]
-        if 'from guanye_internal.schema_migrations order by version' in sql:
+        if 'from guanye_internal.schema_migrations order by applied_at,version' in sql:
             return [{'version':version,'checksum':checksum} for version,checksum in self.history.items()]
         if ' as m01,' in sql:
             return [dict(self.probes)]
@@ -383,7 +383,11 @@ const {pgcrypto}=require(process.argv[3]);
   assert.equal(legacyProbes.m33,false,'review queue probe safe on an untouched library');
   assert.equal(legacyProbes.m34,false,'owner activation probe safe on an untouched library');
   assert.equal(legacyProbes.m35,false,'intake probe safe on an untouched library');
-  assert.equal(legacyProbes.m36,false,'cover training must not be inferred on an untouched library');
+  assert.equal(legacyProbes.m36,false,'PPT training must not be inferred on an untouched library');
+  assert.equal(legacyProbes.m37,false,'cover training must not be inferred on an untouched library');
+  assert.equal(legacyProbes.m38,false,'cover human follow-up must not be inferred on an untouched library');
+  assert.equal(legacyProbes.m39,false,'cover progress must not be inferred on an untouched library');
+  assert.equal(legacyProbes.m40,false,'cover visual reference must not be inferred on an untouched library');
   for(let index=7;index<process.argv.length-2;index++) await db.exec(fs.readFileSync(process.argv[index],'utf8'));
   const currentProbes=(await db.query(probe)).rows[0];
   assert.equal(currentProbes.m28,true,'admission privileges and triggers detected after M28');
@@ -394,11 +398,14 @@ const {pgcrypto}=require(process.argv[3]);
   assert.equal(currentProbes.m33,true,'professional review queue detected after M33');
   assert.equal(currentProbes.m34,true,'professional owner activation detected after M34');
   assert.equal(currentProbes.m35,true,'direct intake queue, owner read policy and claim index detected after M35');
-  assert.equal(currentProbes.m36,true,'cover training detected only after the migration');
-  assert.equal(currentProbes.m38,true,'cover progress detected only after the migration');
+  assert.equal(currentProbes.m36,true,'PPT training detected only after the migration');
+  assert.equal(currentProbes.m37,true,'cover training detected only after the migration');
+  assert.equal(currentProbes.m38,true,'cover human follow-up detected only after the migration');
+  assert.equal(currentProbes.m39,true,'cover progress detected only after the migration');
+  assert.equal(currentProbes.m40,true,'cover visual reference detected only after the migration');
   const failurePath=process.argv[process.argv.length-1];
-  const expected=['20261121_01_ai_review_foundation','20261121_02_ai_reviews','20261121_03_ai_planning','20261121_04_ai_generation','20261121_05_review_queue','20261121_06_generation_history','20261121_07_review_calibration','20261121_08_review_comparison','20261121_09_review_backfill','20261121_10_review_queue_listing','20261121_11_planning_history','20261121_12_library_classification','20261121_13_formal_correction','20261121_14_library_formal_scores','20261121_15_planning_original_references','20261121_16_uploaded_baseline','20261121_17_review_workspace_batch','20261121_18_review_backfill_classification','20261121_19_uploaded_source_provenance','20261121_20_uploaded_source_groups','20261121_21_uploaded_comparison_source_dedup','20261122_22_single_judge_foundation','20261122_23_single_judge_original_archive','20261122_24_single_judge_submission','20261122_25_image_workers_default','20261122_26_single_judge_score_revisions','20261122_27_single_judge_review_workspace','20261122_28_single_judge_admission','20261122_29_single_judge_generation_references','20261122_30_single_judge_creation','20261122_31_single_judge_image_runtime','20261122_32_single_judge_legacy_backfill','20261122_33_single_judge_review_queue','20261122_34_single_judge_owner_activation','20261122_35_single_judge_intake','20261123_38_cover_training','20261123_39_cover_after_human','20261124_40_cover_progress','20261124_41_cover_visual_reference'];
-  const history=(await db.query('select version from guanye_internal.schema_migrations order by version')).rows.map(row=>row.version);
+  const expected=['20261121_01_ai_review_foundation','20261121_02_ai_reviews','20261121_03_ai_planning','20261121_04_ai_generation','20261121_05_review_queue','20261121_06_generation_history','20261121_07_review_calibration','20261121_08_review_comparison','20261121_09_review_backfill','20261121_10_review_queue_listing','20261121_11_planning_history','20261121_12_library_classification','20261121_13_formal_correction','20261121_14_library_formal_scores','20261121_15_planning_original_references','20261121_16_uploaded_baseline','20261121_17_review_workspace_batch','20261121_18_review_backfill_classification','20261121_19_uploaded_source_provenance','20261121_20_uploaded_source_groups','20261121_21_uploaded_comparison_source_dedup','20261122_22_single_judge_foundation','20261122_23_single_judge_original_archive','20261122_24_single_judge_submission','20261122_25_image_workers_default','20261122_26_single_judge_score_revisions','20261122_27_single_judge_review_workspace','20261122_28_single_judge_admission','20261122_29_single_judge_generation_references','20261122_30_single_judge_creation','20261122_31_single_judge_image_runtime','20261122_32_single_judge_legacy_backfill','20261122_33_single_judge_review_queue','20261122_34_single_judge_owner_activation','20261122_35_single_judge_intake','20261125_42_ppt_training_scope','20261123_38_cover_training','20261123_39_cover_after_human','20261124_40_cover_progress','20261124_41_cover_visual_reference'];
+  const history=(await db.query('select version from guanye_internal.schema_migrations order by applied_at,version')).rows.map(row=>row.version);
   assert.deepEqual(history,expected);
   const objects=(await db.query(`select
    to_regclass('public.ai_review_jobs') is not null as review,

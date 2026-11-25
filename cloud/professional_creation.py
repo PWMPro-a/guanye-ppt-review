@@ -26,10 +26,14 @@ ROUTES = frozenset({
     ("GET", "/api/ai/training/cover-references"),
     ("POST", "/api/ai/training/cover-pair"), ("POST", "/api/ai/training/cover-correct"),
     ("POST", "/api/ai/training/cover-style"),
+    ("GET", ai_reviews.PPT_TRAINING_SAMPLES_PATH),
+    ("GET", ai_reviews.PPT_TRAINING_COUNTS_PATH),
 })
 COVER = "/api/ai/generation/cover"
 COVER_INVENTORY = "/api/ai/training/cover-inventory"
 COVER_REFERENCES = "/api/ai/training/cover-references"
+PPT_TRAINING_SAMPLES = ai_reviews.PPT_TRAINING_SAMPLES_PATH
+PPT_TRAINING_COUNTS = ai_reviews.PPT_TRAINING_COUNTS_PATH
 INSTRUCTION_KEYS = ("keep", "change", "doNotChange")
 MAX_ANALYZE_BODY = 46 * 1024 * 1024
 MAX_EDIT_BODY = 8 * 1024 * 1024
@@ -148,6 +152,8 @@ class ProfessionalCreation:
         ):
             raise ValueError("每次只能重试一页")
         ctx = CreationContext(self, actor, token, body, query)
+        if path in (PPT_TRAINING_SAMPLES, PPT_TRAINING_COUNTS):
+            return self._ppt_training(ctx, path)
         if path == COVER or path.startswith(COVER + "/") or path.startswith("/api/ai/training/cover-"):
             if not self.cover_training:
                 raise ImportErrorResponse(404, "本机未启用封面训练")
@@ -183,6 +189,31 @@ class ProfessionalCreation:
             if plan_id:
                 result["coverStyleEvidence"] = ctx.cover_rpc("plan_visual", p_plan_id=plan_id)
         return result if isinstance(result, tuple) else (200, result)
+
+    def _ppt_training(self, ctx, path):
+        if path == PPT_TRAINING_COUNTS:
+            return 200, ctx.ppt_rpc("counts")
+        query = ctx.query or {}
+        scope = str(query.get("scope") or "deck").strip()
+        if scope not in {"deck", "page", "cover"}:
+            raise ValueError("需要 scope（deck、page 或 cover）")
+        deck_id = query.get("deckId") or query.get("deck_id")
+        page_id = query.get("pageId") or query.get("page_id")
+        if scope == "deck":
+            if deck_id or page_id:
+                raise ValueError("整套训练不接受 deckId 或 pageId")
+        elif not isinstance(deck_id, str) or not 0 < len(deck_id) <= ai_reviews.MAX_DECK_ID_LENGTH:
+            raise ValueError("单页或封面训练需要 deckId")
+        if page_id is not None and (not isinstance(page_id, str) or not 0 < len(page_id) <= ai_reviews.MAX_DECK_ID_LENGTH):
+            raise ValueError("pageId 无效")
+        try:
+            limit = int(query.get("limit", "200"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("limit 必须是整数") from exc
+        if not 1 <= limit <= 2000:
+            raise ValueError("limit 必须在 1–2000 之间")
+        return 200, ctx.ppt_rpc("samples", scope=scope, deck_id=deck_id, page_id=page_id, limit=limit)
+
 
     def _cover(self, ctx, path):
         def uid(values, field):
@@ -343,6 +374,19 @@ class CreationContext:
                 "path": reference["imagePaths"][0], "sha256": self.cover_visual_sha,
                 "facts": self.cover_style_facts, "model": ai_planning.PLANNER_MODEL,
                 "styleVersion": self.cover_style.get("version")}
+
+    def ppt_rpc(self, operation, **params):
+        if operation == "counts":
+            remote = "single_judge_ppt_training_counts"
+            value = {"w": self.workspace_id}
+        elif operation == "samples":
+            remote = "single_judge_ppt_training_samples"
+            value = {"w": self.workspace_id, "p_scope": params["scope"],
+                     "p_deck_id": params.get("deck_id"), "p_page_id": params.get("page_id"),
+                     "p_limit": params["limit"]}
+        else:
+            raise PermissionError("PPT 训练操作不允许访问该云端操作")
+        return self.service._json(self._bearer, "POST", "/rest/v1/rpc/" + remote, value=value)
 
     def cover_rpc(self, operation, **params):
         return self.service._json(self._bearer, "POST", "/rest/v1/rpc/single_judge_cover_" + operation,

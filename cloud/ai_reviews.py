@@ -23,6 +23,8 @@ from uuid import uuid4
 
 REVIEW_PATH = "/api/ai/reviews"
 IMPORT_PATH = "/api/ai/reviews/import"
+PPT_TRAINING_SAMPLES_PATH = "/api/ai/training/ppt-samples"
+PPT_TRAINING_COUNTS_PATH = "/api/ai/training/ppt-counts"
 KINDS = {"uploaded", "generated"}
 QUEUE_ORDER = ("uploaded", "generated")
 QUEUE_STATUSES = ("queued", "running", "completed", "failed")
@@ -38,6 +40,7 @@ MAX_IMPORT_FILE_BYTES = 25 * 1024 * 1024
 MAX_IMPORT_TOTAL_BYTES = 100 * 1024 * 1024
 MAX_IMPORT_PAGES = 600
 MAX_TARGET_IMAGES = 12
+MAX_DECK_BATCH_IMAGES = MAX_TARGET_IMAGES
 MAX_REFERENCE_IMAGES = 3
 MAX_CALIBRATION_IMAGES = 2
 MAX_CALIBRATION_IMAGE_BYTES = 4 * 1024 * 1024
@@ -72,6 +75,8 @@ def configure(router):
     router.add("GET", REVIEW_PATH, handle_get)
     router.add("POST", REVIEW_PATH, handle_post)
     router.add("POST", IMPORT_PATH, handle_import)
+    router.add("GET", PPT_TRAINING_COUNTS_PATH, handle_ppt_training_counts)
+    router.add("GET", PPT_TRAINING_SAMPLES_PATH, handle_ppt_training_samples)
 
 
 def _workspace(ctx) -> str:
@@ -286,6 +291,53 @@ def _body_safe(ctx) -> dict[str, Any]:
         except json.JSONDecodeError:
             return {}
     return value if isinstance(value, dict) else {}
+
+
+def _ppt_training_query(ctx) -> tuple[str, str | None, str | None, int]:
+    query = _query(ctx)
+    scope = str(query.get("scope") or "deck").strip()
+    if scope not in {"deck", "page", "cover"}:
+        raise ValueError("需要 scope（deck、page 或 cover）")
+    deck_id = query.get("deckId") or query.get("deck_id")
+    page_id = query.get("pageId") or query.get("page_id")
+    if scope == "deck":
+        if deck_id or page_id:
+            raise ValueError("整套训练不接受 deckId 或 pageId")
+    else:
+        if not isinstance(deck_id, str) or not 0 < len(deck_id) <= MAX_DECK_ID_LENGTH:
+            raise ValueError("单页或封面训练需要 deckId")
+        if page_id is not None and (not isinstance(page_id, str) or not 0 < len(page_id) <= MAX_DECK_ID_LENGTH):
+            raise ValueError("pageId 无效")
+    raw_limit = query.get("limit", "200")
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("limit 必须是整数") from exc
+    if not 1 <= limit <= 2000:
+        raise ValueError("limit 必须在 1–2000 之间")
+    return scope, deck_id, page_id, limit
+
+
+def handle_ppt_training_samples(ctx):
+    _member(ctx)
+    _require_judge(ctx)
+    scope, deck_id, page_id, limit = _ppt_training_query(ctx)
+    value = _json_value(_rpc(ctx, "single_judge_ppt_training_samples", {
+        "w": _workspace(ctx), "p_scope": scope, "p_deck_id": deck_id,
+        "p_page_id": page_id, "p_limit": limit,
+    }, privileged=False))
+    if not isinstance(value, list):
+        raise ValueError("PPT 训练素材返回格式无效")
+    return {"scope": scope, "deckId": deck_id, "pageId": page_id, "samples": value, "count": len(value)}
+
+
+def handle_ppt_training_counts(ctx):
+    _member(ctx)
+    _require_judge(ctx)
+    value = _json_value(_rpc(ctx, "single_judge_ppt_training_counts", {"w": _workspace(ctx)}, privileged=False))
+    if not isinstance(value, dict):
+        raise ValueError("PPT 训练统计返回格式无效")
+    return value
 
 
 def handle_get(ctx):
@@ -1006,6 +1058,57 @@ def _safe_error(exc: Exception) -> str:
     return text[:1000]
 
 
+def _aggregate_deck_batches(batch_results: list[dict[str, Any]], job: dict[str, Any], settings: dict[str, Any], workspace_settings: dict[str, Any], pages: list[dict[str, Any]]) -> dict[str, Any]:
+    if not batch_results:
+        raise ValueError("整套训练没有完成任何页面批次")
+    dimensions = list(batch_results[0]["scores"])
+    scores = {dimension: round(sum(item["scores"][dimension] for item in batch_results) / len(batch_results), 4) for dimension in dimensions}
+    reasons = []
+    for index, item in enumerate(batch_results, 1):
+        for reason in item.get("reasons", []):
+            if isinstance(reason, str) and reason.strip():
+                reasons.append(f"第 {index} 批：{reason.strip()}")
+    aggregate = _normalise_result({
+        "scores": scores,
+        "classification": {"label": "整套批次聚合"},
+        "reasons": reasons,
+        "summary": f"已读取整套 {len(pages)} 页，分 {len(batch_results)} 批完成评审。",
+        "confidence": min((item.get("confidence") for item in batch_results if isinstance(item.get("confidence"), (int, float))), default=None),
+    }, job, settings, workspace_settings)
+    aggregate["pageResults"] = [
+        {
+            "pageIds": [str(page.get("id") or "") for page in pages[start:start + MAX_DECK_BATCH_IMAGES]],
+            "positions": [int(page.get("position") or start + offset + 1) for offset, page in enumerate(pages[start:start + MAX_DECK_BATCH_IMAGES])],
+            "labelScope": "deck-batch",
+            "scores": dict(batch_results[index]["scores"]),
+            "weightedScore": batch_results[index].get("weightedScore"),
+            "summary": batch_results[index].get("summary", ""),
+        }
+        for index, start in enumerate(range(0, len(pages), MAX_DECK_BATCH_IMAGES))
+    ]
+    aggregate["coverage"] = {
+        "scope": "deck", "mode": "all-pages-batched", "pagesExpected": len(pages),
+        "pagesEvaluated": len(pages), "batches": len(batch_results), "complete": True,
+    }
+    return aggregate
+
+
+def _run_deck_full(ctx, job, deck, settings, workspace_settings, training):
+    pages = _deck_images(deck)
+    if not pages:
+        raise ValueError("预评目标没有可读取图片")
+    batch_results = []
+    for start in range(0, len(pages), MAX_DECK_BATCH_IMAGES):
+        batch = pages[start:start + MAX_DECK_BATCH_IMAGES]
+        messages = _build_messages(
+            ctx, job, deck, settings, workspace_settings, training,
+            target_images=batch, target_total=len(pages), target_offset=start,
+        )
+        response = ctx.chat_json(messages)
+        batch_results.append(_normalise_result(_json_value(response), job, settings, workspace_settings))
+    return _aggregate_deck_batches(batch_results, job, settings, workspace_settings, pages)
+
+
 def _run_job(ctx, job: dict[str, Any], training: Any) -> dict[str, Any]:
     deck = _deck(ctx, str(job.get("deckId") or job.get("deck_id") or ""))
     if not deck:
@@ -1018,9 +1121,14 @@ def _run_job(ctx, job: dict[str, Any], training: Any) -> dict[str, Any]:
         raise ObsoleteReview("评分标准已变化，预评作废")
     settings = _settings(ctx)
     workspace_settings = _workspace_row(ctx).get("settings") or {}
-    messages = _build_messages(ctx, job, deck, settings, workspace_settings, training if job.get("variant") == "assisted" else None)
-    response = ctx.chat_json(messages)
-    result = _normalise_result(_json_value(response), job, settings, workspace_settings)
+    scope = str(job.get("scope") or "deck")
+    training_payload = training if job.get("variant") == "assisted" else None
+    if scope == "deck":
+        result = _run_deck_full(ctx, job, deck, settings, workspace_settings, training_payload)
+    else:
+        messages = _build_messages(ctx, job, deck, settings, workspace_settings, training_payload)
+        response = ctx.chat_json(messages)
+        result = _normalise_result(_json_value(response), job, settings, workspace_settings)
     return _finish_attempt(ctx, job, "completed", result=result)
 
 
@@ -1230,7 +1338,7 @@ def _budget_prompt_task(task: dict[str, Any]) -> dict[str, Any]:
     return core
 
 
-def _build_messages(ctx, job, deck, settings, workspace_settings, training) -> list[dict[str, Any]]:
+def _build_messages(ctx, job, deck, settings, workspace_settings, training, *, target_images=None, target_total=None, target_offset=0) -> list[dict[str, Any]]:
     source_kind = str(job.get("sourceKind") or job.get("source_kind") or deck.get("source_kind") or "uploaded")
     scope = str(job.get("scope") or "deck")
     unit_id = str(job.get("unitId") or job.get("unit_id") or "")
@@ -1244,11 +1352,13 @@ def _build_messages(ctx, job, deck, settings, workspace_settings, training) -> l
     dimensions = ["visual", "layout", "match"] if source_kind == "generated" else [
         str(dim.get("id")) for dim in (workspace_settings or {}).get("dimensions", []) if isinstance(dim, dict) and dim.get("id")
     ]
-    images = _deck_images(deck)
+    all_images = _deck_images(deck)
     if scope == "page":
-        images = [image for image in images if image["id"] == unit_id]
+        images = [image for image in all_images if image["id"] == unit_id]
+    elif target_images is not None:
+        images = list(target_images)
     else:
-        images = _pick_images(images, MAX_TARGET_IMAGES)
+        images = _pick_images(all_images, MAX_TARGET_IMAGES)
     if not images:
         raise ValueError("预评目标没有可读取图片")
     task = {
@@ -1283,15 +1393,29 @@ def _build_messages(ctx, job, deck, settings, workspace_settings, training) -> l
         ],
         "calibration": calibration_bundle or {"samples": [], "corrections": [], "selectedSamples": 0, "selectedCorrections": 0},
     }
+    if scope == "deck" and target_images is not None:
+        total = int(target_total if target_total is not None else len(all_images))
+        start = int(target_offset) + 1
+        task["pageCoverage"] = {
+            "mode": "all-pages-batched",
+            "batchStart": start,
+            "batchEnd": start + len(images) - 1,
+            "batchSize": len(images),
+            "totalPages": total,
+            "allPagesRequired": True,
+        }
     prompt_task = _budget_prompt_task(task)
     text = _prompt_json(prompt_task)
     if len(text) > MAX_PROMPT_JSON:
         raise ValueError("结构化提示词超过 MAX_PROMPT_JSON")
     content: list[dict[str, Any]] = [{"type": "text", "text": text}]
+    total_for_label = int(target_total if target_total is not None else len(images))
     for index, image in enumerate(images, 1):
-        pair = _image_content(ctx, image["path"], f"目标{scope}图 {index}/{len(images)}：{image['name']}")
-        if pair:
-            content.extend(pair)
+        position = int(image.get("position") or (target_offset + index))
+        pair = _image_content(ctx, image["path"], f"目标{scope}图 第{position}页/{total_for_label}：{image['name']}")
+        if not pair:
+            raise ValueError(f"目标页面图片不可用：{image['id']}")
+        content.extend(pair)
     if source_kind == "generated":
         references = _reference_images(deck)
         for index, reference in enumerate(references[:MAX_REFERENCE_IMAGES], 1):

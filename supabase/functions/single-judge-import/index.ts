@@ -14,12 +14,12 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 const DECK_ID_PATTERN = /^import-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
-type Action = "prepare" | "publish";
+type Action = "prepare" | "publish" | "library-prepare" | "library-publish";
 type AccessRole = "judge" | "admin" | "submitter";
 type JsonObject = Record<string, unknown>;
 
 interface NormalizedImport {
-  action: Action;
+  action: "prepare" | "publish";
   aiAllowed: boolean;
   workspaceId: string;
   deckId: string;
@@ -31,6 +31,25 @@ interface NormalizedImport {
   };
   pageSizes: number[];
   pageHashes: string[];
+}
+
+interface LibraryPage {
+  id: string;
+  name: string;
+  position: number;
+}
+
+interface NormalizedLibraryImport {
+  action: "library-prepare" | "library-publish";
+  workspaceId: string;
+  deckId: string;
+  title: string;
+  metadata: JsonObject;
+  pages: LibraryPage[];
+  pageSizes: number[];
+  pageHashes: string[];
+  review: JsonObject;
+  sourceGroupSha256: string;
 }
 
 interface StorageErrorLike {
@@ -327,6 +346,64 @@ function parseImportRequest(value: unknown): NormalizedImport {
   };
 }
 
+function parseLibraryRequest(value: unknown): NormalizedLibraryImport {
+  if (!isRecord(value)) throw new HttpError(400, "INVALID_JSON", "请求体必须是 JSON 对象");
+  assertExactKeys(value, [
+    "action", "workspaceId", "deckId", "title", "metadata", "pages",
+    "pageSizes", "pageHashes", "review", "sourceGroupSha256",
+  ]);
+  if (value.action !== "library-prepare" && value.action !== "library-publish") {
+    throw new HttpError(400, "INVALID_ACTION", "训练素材请求动作无效");
+  }
+  if (typeof value.workspaceId !== "string" || !UUID_PATTERN.test(value.workspaceId)) {
+    throw new HttpError(400, "INVALID_WORKSPACE", "workspaceId 必须是小写规范 UUID");
+  }
+  if (typeof value.deckId !== "string" || !DECK_ID_PATTERN.test(value.deckId)) {
+    throw new HttpError(400, "INVALID_DECK_ID", "deckId 必须为 import- 加小写规范 UUID");
+  }
+  if (typeof value.title !== "string" || value.title.trim() === "" || unicodeLength(value.title.trim()) > 100 || /[\u0000-\u001f\u007f]/.test(value.title)) {
+    throw new HttpError(400, "INVALID_TITLE", "title 长度或字符无效");
+  }
+  if (!isRecord(value.metadata) || JSON.stringify(value.metadata).length > 24000) {
+    throw new HttpError(400, "INVALID_METADATA", "训练素材元数据无效");
+  }
+  if (!Array.isArray(value.pages) || value.pages.length < 1 || value.pages.length > MAX_PAGES) {
+    throw new HttpError(400, "INVALID_PAGE_COUNT", "pages 必须包含 1 到 600 页");
+  }
+  const pages = value.pages.map((item, index) => {
+    if (!isRecord(item)) throw new HttpError(400, "INVALID_PAGE", "页面元数据无效");
+    assertExactKeys(item, ["id", "name", "position"]);
+    if (typeof item.id !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(item.id) || typeof item.name !== "string" || unicodeLength(item.name) > 255 || typeof item.position !== "number" || item.position !== index + 1) {
+      throw new HttpError(400, "INVALID_PAGE", "页面标识或页序无效");
+    }
+    return { id: item.id, name: item.name, position: item.position };
+  });
+  if (!Array.isArray(value.pageSizes) || value.pageSizes.length !== pages.length) {
+    throw new HttpError(400, "INVALID_PAGE_SIZES", "pageSizes 必须与页面一一对应");
+  }
+  let totalPageBytes = 0;
+  const pageSizes = value.pageSizes.map((item, index) => {
+    const size = parsePositiveByteSize(item, MAX_PAGE_BYTES, "第 " + (index + 1) + " 页");
+    totalPageBytes += size;
+    return size;
+  });
+  if (totalPageBytes > MAX_TOTAL_PAGE_BYTES) throw new HttpError(400, "PAGE_TOTAL_TOO_LARGE", "页面总大小超过 300 MiB");
+  if (!Array.isArray(value.pageHashes) || value.pageHashes.length !== pages.length || value.pageHashes.some((item) => typeof item !== "string" || !SHA256_PATTERN.test(item))) {
+    throw new HttpError(400, "INVALID_PAGE_HASHES", "每页必须提供小写 64 位十六进制 SHA-256");
+  }
+  if (!isRecord(value.review) || JSON.stringify(value.review).length > 24000 || !isRecord(value.review.scores)) {
+    throw new HttpError(400, "INVALID_REVIEW", "训练评分无效");
+  }
+  for (const [key, score] of Object.entries(value.review.scores)) {
+    if (!/^[A-Za-z0-9_-]{1,80}$/.test(key) || typeof score !== "number" || !Number.isFinite(score) || score < 0 || score > 5) {
+      throw new HttpError(400, "INVALID_REVIEW", "训练评分超出范围");
+    }
+  }
+  if (typeof value.sourceGroupSha256 !== "string" || !SHA256_PATTERN.test(value.sourceGroupSha256)) {
+    throw new HttpError(400, "INVALID_SOURCE_HASH", "sourceGroupSha256 无效");
+  }
+  return { action: value.action, workspaceId: value.workspaceId, deckId: value.deckId, title: value.title.trim(), metadata: value.metadata, pages, pageSizes, pageHashes: [...value.pageHashes], review: value.review, sourceGroupSha256: value.sourceGroupSha256 };
+}
 function readBearerToken(request: Request): string {
   const authorization = request.headers.get("authorization");
   const match = authorization?.match(/^Bearer ([^\s]+)$/i);
@@ -445,6 +522,9 @@ function buildPaths(command: NormalizedImport): { originalPath: string; previewP
   return { originalPath, previewPaths };
 }
 
+function buildLibraryPaths(command: NormalizedLibraryImport): string[] {
+  return command.pages.map((_page, index) => `${command.workspaceId}/${command.deckId}/preview/${index + 1}.png`);
+}
 function isMissingStorageError(error: StorageErrorLike): boolean {
   const status = Number(error.status ?? error.statusCode ?? 0);
   return status === 404 || /not found|does not exist|object not found/i.test(error.message ?? "");
@@ -589,7 +669,7 @@ async function verifyAllObjects(
 async function verifyPreviewObjects(
   serviceClient: SupabaseClientLike,
   previewPaths: readonly string[],
-  command: NormalizedImport,
+  command: Pick<NormalizedImport, "pageSizes" | "pageHashes">,
 ): Promise<void> {
   let totalPreviewBytes = 0;
   // Read one preview at a time after metadata checks. Each object is downloaded
@@ -618,6 +698,73 @@ async function verifyPreviewObjects(
   }
 }
 
+async function prepareLibraryImport(
+  serviceClient: SupabaseClientLike,
+  command: NormalizedLibraryImport,
+): Promise<Response> {
+  const paths = buildLibraryPaths(command);
+  const specs = paths.map((path, index) => ({ path, sizeBytes: command.pageSizes[index] }));
+  const outcomes = await mapWithConcurrency(specs, STORAGE_CONCURRENCY, async (spec) => {
+    const info = await inspectObject(serviceClient, spec);
+    if (!info.exists) return createUploadToken(serviceClient, spec);
+    if (info.sizeBytes !== spec.sizeBytes) throw new HttpError(409, "OBJECT_SIZE_MISMATCH", "已有训练素材大小不匹配，拒绝覆盖");
+    return null;
+  });
+  return jsonResponse({ uploads: outcomes.filter((item): item is { path: string; token: string } => item !== null) });
+}
+
+function libraryDeckData(command: NormalizedLibraryImport, paths: readonly string[]): JsonObject {
+  const metadata = { ...command.metadata };
+  delete metadata.id;
+  delete metadata.images;
+  delete metadata.source_kind;
+  delete metadata.sourceKind;
+  delete metadata.source_group_sha256;
+  delete metadata.sourceGroupSha256;
+  const name = typeof metadata.name === "string" && metadata.name.trim() !== "" ? metadata.name : command.title;
+  return {
+    ...metadata,
+    id: command.deckId,
+    title: command.title,
+    name,
+    origin: "formal-library",
+    images: command.pages.map((page, index) => ({
+      id: page.id,
+      name: page.name,
+      path: paths[index],
+      thumbPath: paths[index],
+      position: page.position,
+    })),
+  };
+}
+
+async function publishLibraryImport(
+  serviceClient: SupabaseClientLike,
+  command: NormalizedLibraryImport,
+  actor: string,
+): Promise<Response> {
+  const paths = buildLibraryPaths(command);
+  const specs = paths.map((path, index) => ({ path, sizeBytes: command.pageSizes[index] }));
+  await verifyAllObjects(serviceClient, specs);
+  await verifyPreviewObjects(serviceClient, paths, command);
+  let result: RpcResult;
+  try {
+    result = await serviceClient.rpc("single_judge_publish_training_library", {
+      w: command.workspaceId,
+      actor,
+      deck: libraryDeckData(command, paths),
+      review: command.review,
+      p_source_group_sha256: command.sourceGroupSha256,
+    });
+  } catch {
+    throw new HttpError(502, "PUBLISH_FAILED", "训练素材发布失败");
+  }
+  if (result.error) throw publishError(result.error);
+  if (!isRecord(result.data) || result.data.ok !== true || typeof result.data.deckId !== "string" || typeof result.data.idempotent !== "boolean") {
+    throw new HttpError(502, "PUBLISH_FAILED", "训练素材发布失败");
+  }
+  return jsonResponse({ ok: true, deckId: result.data.deckId, idempotent: result.data.idempotent });
+}
 function publishError(error: StorageErrorLike): HttpError {
   const code = typeof error.code === "string" ? error.code : "";
   if (code === "42501") {
@@ -743,7 +890,10 @@ export function createHandler(
 
       const jwt = readBearerToken(request);
       const apiKey = readApiKey(request);
-      const command = parseImportRequest(await parseJsonBody(request));
+      const body = await parseJsonBody(request);
+      const command = isRecord(body) && (body.action === "library-prepare" || body.action === "library-publish")
+        ? parseLibraryRequest(body)
+        : parseImportRequest(body);
       const supabaseUrl = dependencies.readSupabaseUrl();
       const userClient = await dependencies.createUserClient({
         url: supabaseUrl,
@@ -759,6 +909,12 @@ export function createHandler(
         apiKey: serviceRoleKey,
       });
 
+      if (command.action === "library-prepare") {
+        return await prepareLibraryImport(serviceClient, command);
+      }
+      if (command.action === "library-publish") {
+        return await publishLibraryImport(serviceClient, command, actor);
+      }
       if (command.action === "prepare") {
         return await prepareImport(serviceClient, command);
       }

@@ -10,10 +10,11 @@
   let generationView = null;
   let generationCleanup = null, generationContext = {planId:'',jobId:'',job:null};
   let planningCleanup = null;
+  let pptTrainingCleanup = null;
   let reviewCleanups = {uploaded:null,generated:null};
   let recentJobsRequest = 0, generationEpoch = 0, reviewNavigationEpoch = 0;
   let generationHistoryLoaded = false, generationHistoryLoading = false;
-  let mounted = {reviews:{uploaded:false,generated:false},planning:false,generation:false};
+  let mounted = {reviews:{uploaded:false,generated:false},planning:false,generation:false,pptTraining:false};
   let decorating = false;
 
   function creationAvailable() {
@@ -73,6 +74,7 @@
       .ai-generation-history [role="status"]:empty{display:none}
       .ai-module-empty{padding:18px;border:1px dashed #cfd8cb;border-radius:10px;color:#6f7770;background:#fff}
       .ai-module-error{color:#a33b32;background:#fff7f5;border:1px solid #f0d7d2;border-radius:10px;padding:12px}
+      .ppt-training-panel{display:grid;gap:14px}.ppt-training-controls{display:flex;gap:10px;align-items:end;flex-wrap:wrap}.ppt-training-controls label{display:grid;gap:5px;font-size:12px;color:var(--muted,#6f7770);min-width:180px}.ppt-training-controls select{min-width:180px;padding:8px;border:1px solid #d5ded4;border-radius:8px;background:#fff}.ppt-training-counts{display:flex;gap:8px;flex-wrap:wrap}.ppt-training-count{display:grid;gap:2px;min-width:110px;padding:10px 12px;border:1px solid #dce6dc;border-radius:10px;background:#fff}.ppt-training-count b{font-size:20px;color:#24352a}.ppt-training-count small{color:var(--muted,#6f7770)}.ppt-training-count.warn{background:#fff8ec;border-color:#f1d6a4}.ppt-training-list{display:grid;gap:8px;max-height:420px;overflow:auto}.ppt-training-row{display:grid;grid-template-columns:minmax(160px,1.6fr) repeat(3,minmax(100px,1fr));gap:8px;padding:10px;border:1px solid #e2e8df;border-radius:9px;background:#fff;font-size:12px}.ppt-training-row span{color:#66736c}@media(max-width:760px){.ppt-training-row{grid-template-columns:1fr 1fr}}
       .ai-workspace-modal[data-cover-training-review="true"] .ai-uploaded-review-card{display:none}
       .ai-workspace-modal[data-cover-training-review="true"] .ai-queue-grid{grid-template-columns:minmax(0,1fr)}
       @media(max-width:760px){.ai-queue-grid{grid-template-columns:1fr}.ai-workspace-shell{padding:0}.ai-workspace-toolbar label{min-width:100%}}
@@ -124,6 +126,8 @@
     }
     dispose(planningCleanup);
     planningCleanup = null;
+    dispose(pptTrainingCleanup);
+    pptTrainingCleanup = null;
     dispose(generationCleanup);
     generationCleanup = null;
     generationView = null;
@@ -231,6 +235,7 @@
       if (ensureReviews) ensureReviewModules();
     }
     else if (name === 'planning') mountPlanning();
+    else if (name === 'ppt-training') mountPptTraining();
     else if (name === 'generation') {
       if (!mounted.generation) mountGeneration();
       else void generationView?.refreshCover?.();
@@ -418,6 +423,36 @@
     }
   }
 
+  function mountPptTraining() {
+    if (mounted.pptTraining) return;
+    const root = document.querySelector('[data-ai-root="ppt-training"]');
+    if (!root) return;
+    mounted.pptTraining = true;
+    let destroyed = false;
+    const choices = deckList();
+    const deckOptions = choices.length
+      ? choices.map(item => '<option value="' + safe(item.id) + '">' + safe(item.title) + '</option>').join('')
+      : '<option value="">暂无可选作品</option>';
+    root.innerHTML = '<section class="ppt-training-panel">'
+      + '<div class="ppt-training-controls">'
+      + '<label>训练范围<select data-ppt-scope><option value="deck">整套 PPT（全部页面）</option><option value="page">单页训练</option><option value="cover">封面训练</option></select></label>'
+      + '<label data-ppt-deck-wrap hidden>作品<select data-ppt-deck>' + deckOptions + '</select></label>'
+      + '<label data-ppt-page-wrap hidden>页面<select data-ppt-page><option value="">全部页面</option></select></label>'
+      + '<button class="button primary" type="button" data-ppt-load>读取训练库</button>'
+      + '</div><p class="ai-module-empty" data-ppt-status role="status">正在读取训练库统计…</p>'
+      + '<div class="ppt-training-counts" data-ppt-counts></div><div class="ppt-training-results" data-ppt-results></div></section>';
+    const scope=root.querySelector('[data-ppt-scope]'),deck=root.querySelector('[data-ppt-deck]'),page=root.querySelector('[data-ppt-page]');
+    const deckWrap=root.querySelector('[data-ppt-deck-wrap]'),pageWrap=root.querySelector('[data-ppt-page-wrap]'),status=root.querySelector('[data-ppt-status]');
+    const counts=root.querySelector('[data-ppt-counts]'),results=root.querySelector('[data-ppt-results]'),loadButton=root.querySelector('[data-ppt-load]');
+    const request=path=>window.GuanyeAI.request(path);
+    const updateControls=()=>{const selected=scope.value;deckWrap.hidden=selected==='deck';pageWrap.hidden=selected!=='page';loadButton.disabled=selected!=='deck'&&!deck.value;};
+    const renderCounts=value=>{if(!value||typeof value!=='object'){counts.textContent='';return;}const labels=[['decks','套作品'],['pages','页图片'],['scoredDecks','有评分整套'],['storedDeckLabels','已固化整套标签'],['storedPageLabels','已固化页标签']];counts.innerHTML=labels.map(([key,label])=>'<span class="ppt-training-count"><b>'+safe(value[key]??0)+'</b><small>'+label+'</small></span>').join('');const proxy=value.labelScopes?.['deck-proxy'];if(proxy!==undefined)counts.insertAdjacentHTML('beforeend','<span class="ppt-training-count warn"><b>'+safe(proxy)+'</b><small>整套分代理页</small></span>');};
+    const renderSamples=(value,selectedScope)=>{const samples=Array.isArray(value?.samples)?value.samples:[];if(selectedScope==='page'){const previous=page.value;page.replaceChildren(new Option('全部页面',''),...samples.map(item=>new Option('第'+String(item.position||'')+'页 · '+String(item.title||item.pageId||''),String(item.pageId||''))));page.value=samples.some(item=>String(item.pageId||'')===previous)?previous:'';}if(!samples.length){results.innerHTML='<p class="ai-module-empty">当前范围没有可用训练样本。</p>';return;}const rows=samples.slice(0,120).map(item=>{const images=Array.isArray(item.images)?item.images.length:(item.image?1:0);const score=item.scores&&typeof item.scores==='object'?Object.entries(item.scores).map(([key,val])=>key+' '+val).join(' · '):'暂无分数';return '<article class="ppt-training-row"><b>'+safe(item.title||item.deckId)+'</b><span>'+safe(item.scope||selectedScope)+(item.position?' · 第'+safe(item.position)+'页':'')+'</span><span>标签：'+safe(item.labelScope||'unknown')+'</span><span>页面：'+safe(images)+' · '+safe(score)+'</span></article>';}).join('');results.innerHTML='<p class="ga-muted">已读取 '+safe(samples.length)+' 条样本。整套训练返回每套 PPT 的全部页面；deck-proxy 仅表示页面没有人工页级分，不是空白素材。</p><div class="ppt-training-list">'+rows+'</div>';};
+    const loadCounts=async()=>{try{renderCounts(await request('/api/ai/training/ppt-counts'));if(!destroyed)status.textContent='训练库可用：保留原素材的高分、低分及其来源标记。';}catch(error){if(!destroyed)status.textContent=error?.message||'训练库统计读取失败';}};
+    const loadSamples=async()=>{const selected=scope.value;const params=new URLSearchParams({scope:selected,limit:'2000'});if(selected!=='deck')params.set('deckId',deck.value);if(selected==='page'&&page.value)params.set('pageId',page.value);loadButton.disabled=true;status.textContent='正在读取训练样本…';try{const payload=await request('/api/ai/training/ppt-samples?'+params.toString());if(destroyed)return;renderSamples(payload,selected);status.textContent='已加载 '+String(payload?.count??0)+' 条训练样本。';}catch(error){if(!destroyed)status.textContent=error?.message||'训练样本读取失败';}finally{if(!destroyed){updateControls();loadButton.disabled=false;}}};
+    const onScope=()=>{updateControls();if(scope.value==='page'&&deck.value)void loadSamples();};scope.addEventListener('change',onScope);deck.addEventListener('change',()=>{updateControls();if(scope.value==='page')void loadSamples();});page.addEventListener('change',()=>{if(scope.value==='page'&&page.value)void loadSamples();});loadButton.addEventListener('click',loadSamples);updateControls();void loadCounts();pptTrainingCleanup=()=>{destroyed=true;scope.removeEventListener('change',onScope);};
+  }
+
   function rebindDeckModules() {
     const modal = document.querySelector('#modal');
     if (!modal?.open || !modal.querySelector('.ai-workspace-shell')) return;
@@ -446,8 +481,9 @@
     const creation = creationAvailable();
     const showCreation = creation || !professionalReviewOnly;
     const hostedTraining = window.Cloud?.coverTrainingSite === true;
+    const pptTraining = creation && window.Cloud?.pptTrainingEnabled === true;
     const title = hostedTraining ? '观页 · 封面训练工作台' : creation ? '专业创作工作台' : professionalReviewOnly ? '正式评分工作台' : 'AI 工作台';
-    const description = hostedTraining ? '先盘点已评分素材，再做单页封面的独立评审与改稿。' : creation
+    const description = hostedTraining ? '先盘点已评分素材，再做单页封面的独立评审与改稿。' : pptTraining ? '训练范围分为整套 PPT 全部页面、任意单页和封面；原素材评分与低分样本都会保留。' : creation
       ? '策划、生图与评审分轨使用；生成作品完成后进入同一正式评分实例。'
       : professionalReviewOnly
         ? '上传与生成分别评分。可以修改正式分，首次提交时的 AI 对比不会被改写。'
@@ -463,6 +499,7 @@
             ${hostedTraining ? '' : '<button id="guanye-ai-tab-reviews" type="button" class="ai-workspace-tab" role="tab" aria-selected="true" aria-controls="guanye-ai-panel-reviews" tabindex="0" data-ai-tab="reviews">AI 评审</button>'}
             ${showCreation ? `<button id="guanye-ai-tab-planning" type="button" class="ai-workspace-tab" role="tab" aria-selected="false" aria-controls="guanye-ai-panel-planning" tabindex="-1" data-ai-tab="planning">${hostedTraining ? '新建封面' : '生成策划'}</button>
             <button id="guanye-ai-tab-generation" type="button" class="ai-workspace-tab" role="tab" aria-selected="false" aria-controls="guanye-ai-panel-generation" tabindex="-1" data-ai-tab="generation">${hostedTraining ? '训练任务' : '生成进度'}</button>` : ''}
+            ${pptTraining ? '<button id="guanye-ai-tab-ppt-training" type="button" class="ai-workspace-tab" role="tab" aria-selected="false" aria-controls="guanye-ai-panel-ppt-training" tabindex="-1" data-ai-tab="ppt-training">PPT训练</button>' : ''}
           </div>
         </div>
         <section id="guanye-ai-panel-reviews" class="ai-workspace-panel" role="tabpanel" ${hostedTraining ? 'aria-label="封面评分"' : 'aria-labelledby="guanye-ai-tab-reviews"'} data-ai-panel="reviews">
@@ -472,6 +509,7 @@
             <div class="ai-operation-card" role="region" aria-label="生成作品评审" tabindex="-1" data-review-focus-target="generated"><h3>${hostedTraining ? '本版封面评分' : '生成作品队列'}</h3><div data-ai-root="reviews-generated"></div></div>
           </div>
         </section>
+        ${pptTraining ? `<section id="guanye-ai-panel-ppt-training" class="ai-workspace-panel" role="tabpanel" aria-labelledby="guanye-ai-tab-ppt-training" data-ai-panel="ppt-training" hidden><div class="ai-operation-card"><h3>PPT训练库</h3><div data-ai-root="ppt-training"></div></div></section>` : ''}
         ${showCreation ? `<section id="guanye-ai-panel-planning" class="ai-workspace-panel" role="tabpanel" aria-labelledby="guanye-ai-tab-planning" data-ai-panel="planning" hidden>
           <div class="ai-operation-card"><h3>策划生成</h3><div data-ai-root="planning"></div></div>
         </section>

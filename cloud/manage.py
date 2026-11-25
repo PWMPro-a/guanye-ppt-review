@@ -64,6 +64,7 @@ MIGRATION_SPECS=(
     ('20261122_33_single_judge_review_queue','20261122_33_single_judge_review_queue.sql'),
     ('20261122_34_single_judge_owner_activation','20261122_34_single_judge_owner_activation.sql'),
     ('20261122_35_single_judge_intake','20261122_35_single_judge_intake.sql'),
+    ('20261125_42_ppt_training_scope','20261125_42_ppt_training_scope.sql'),
     (COVER_PILOT_VERSION,'20261123_38_cover_training.sql'),
     (COVER_HUMAN_FIRST_VERSION,'20261123_39_cover_after_human.sql'),
     (COVER_PROGRESS_VERSION,'20261124_40_cover_progress.sql'),
@@ -212,7 +213,7 @@ def _database_state(api,ref,read_only=False):
 
 def _history_rows(api,ref,read_only=False):
     query=_read_only_query_rows if read_only else _query_rows
-    rows=query(api,ref,f"select version,checksum from {MIGRATION_TABLE} order by version;")
+    rows=query(api,ref,f"select version,checksum from {MIGRATION_TABLE} order by applied_at,version;")
     return {str(row['version']):str(row.get('checksum') or '') for row in rows}
 
 
@@ -670,6 +671,19 @@ def _existing_schema_probes(api,ref,read_only=False):
     and has_function_privilege('authenticated',to_regprocedure('public.single_judge_intake_fail(uuid,uuid,uuid,text)'),'EXECUTE')
     and not has_function_privilege('anon',to_regprocedure('public.single_judge_intake_fail(uuid,uuid,uuid,text)'),'EXECUTE')
     and not has_function_privilege('service_role',to_regprocedure('public.single_judge_intake_fail(uuid,uuid,uuid,text)'),'EXECUTE')) as m35,
+ (to_regclass('guanye_internal.ppt_training_labels') is not null
+    and exists(select 1 from pg_proc p where p.oid=to_regprocedure('public.single_judge_ppt_training_samples(uuid,text,text,text,integer)')
+      and p.prosecdef and has_function_privilege('authenticated',p.oid,'EXECUTE')
+      and not has_function_privilege('anon',p.oid,'EXECUTE')
+      and not has_function_privilege('service_role',p.oid,'EXECUTE'))
+    and exists(select 1 from pg_proc p where p.oid=to_regprocedure('public.single_judge_ppt_training_counts(uuid)')
+      and p.prosecdef and has_function_privilege('authenticated',p.oid,'EXECUTE')
+      and not has_function_privilege('anon',p.oid,'EXECUTE')
+      and not has_function_privilege('service_role',p.oid,'EXECUTE'))
+    and exists(select 1 from pg_proc p where p.oid=to_regprocedure('public.single_judge_publish_training_library(uuid,uuid,jsonb,jsonb,text)')
+      and p.prosecdef and has_function_privilege('service_role',p.oid,'EXECUTE')
+      and not has_function_privilege('authenticated',p.oid,'EXECUTE')
+      and not has_function_privilege('anon',p.oid,'EXECUTE'))) as m36,
  (to_regclass('guanye_internal.cover_training_settings') is not null
     and to_regclass('guanye_internal.cover_training_candidates') is not null
     and to_regclass('guanye_internal.cover_training_pairs') is not null
@@ -680,16 +694,26 @@ def _existing_schema_probes(api,ref,read_only=False):
       and not has_function_privilege('anon',p.oid,'EXECUTE'))
     and exists(select 1 from pg_proc p where p.oid=to_regprocedure('public.single_judge_cover_claim_pages(uuid,uuid,text,integer,integer)')
       and p.prosecdef and has_function_privilege('service_role',p.oid,'EXECUTE')
-      and not has_function_privilege('authenticated',p.oid,'EXECUTE'))) as m36,
+      and not has_function_privilege('authenticated',p.oid,'EXECUTE'))) as m37,
  (to_regclass('guanye_internal.cover_training_after_human') is not null
     and exists(select 1 from pg_proc p where p.oid=to_regprocedure('public.single_judge_cover_review_claim(uuid,uuid,text,integer)')
       and p.prosecdef and has_function_privilege('service_role',p.oid,'EXECUTE')
       and not has_function_privilege('authenticated',p.oid,'EXECUTE'))
     and exists(select 1 from pg_trigger t where t.tgrelid=to_regclass('public.ai_review_decisions')
-      and t.tgname='cover_training_enqueue_after_human' and not t.tgisinternal)) as m37,
+      and t.tgname='cover_training_enqueue_after_human' and not t.tgisinternal)) as m38,
  (exists(select 1 from pg_proc p where p.oid=to_regprocedure('guanye_internal.cover_training_feedback(uuid,uuid,uuid)')
     and p.prosecdef and position('libraryVisible' in p.prosrc)>0 and position('retrying' in p.prosrc)>0
-    and not has_function_privilege('authenticated',p.oid,'EXECUTE'))) as m38;""",read_only=read_only)
+    and not has_function_privilege('authenticated',p.oid,'EXECUTE'))) as m39,
+ (exists(select 1 from information_schema.columns where table_schema='guanye_internal' and table_name='cover_training_plan_context' and column_name='visual_reference')
+    and exists(select 1 from pg_proc p where p.oid=to_regprocedure('public.single_judge_cover_references(uuid)')
+      and p.prosecdef and has_function_privilege('authenticated',p.oid,'EXECUTE')
+      and not has_function_privilege('anon',p.oid,'EXECUTE'))
+    and exists(select 1 from pg_proc p where p.oid=to_regprocedure('public.single_judge_cover_plan_visual(uuid,uuid)')
+      and p.prosecdef and has_function_privilege('authenticated',p.oid,'EXECUTE')
+      and not has_function_privilege('anon',p.oid,'EXECUTE'))
+    and exists(select 1 from pg_proc p where p.oid=to_regprocedure('public.single_judge_cover_save_visual_plan(uuid,uuid,jsonb,bigint,jsonb,jsonb)')
+      and p.prosecdef and has_function_privilege('authenticated',p.oid,'EXECUTE')
+      and not has_function_privilege('anon',p.oid,'EXECUTE'))) as m40;""",read_only=read_only)
 
 
 def _all_base_tables(state):

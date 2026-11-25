@@ -397,6 +397,10 @@ class FakeStore:
             if self.comparison_error is not None:
                 raise self.comparison_error
             return self.comparison_result
+        if name == "single_judge_ppt_training_samples":
+            return [{"scope": params["p_scope"], "deckId": params.get("p_deck_id"), "pageId": params.get("p_page_id"), "labelScope": "deck-proxy", "scores": {"visual": 4, "layout": 3}}]
+        if name == "single_judge_ppt_training_counts":
+            return {"decks": 127, "pages": 983, "scoredDecks": 127, "scope": "deck/page/cover"}
         if name == "ai_review_training_bundle":
             raise AssertionError("mixed-track training bundle is no longer allowed")
         if name == "get_review_library":
@@ -524,8 +528,45 @@ class AIReviewContractTests(unittest.TestCase):
 
     def test_routes_are_fixed(self):
         self.assertEqual([(m, p) for m, p, _ in self.router.routes], [
-            ("GET", "/api/ai/reviews"), ("POST", "/api/ai/reviews"), ("POST", "/api/ai/reviews/import")
+            ("GET", "/api/ai/reviews"), ("POST", "/api/ai/reviews"), ("POST", "/api/ai/reviews/import"),
+            ("GET", "/api/ai/training/ppt-counts"), ("GET", "/api/ai/training/ppt-samples")
         ])
+
+    def test_deck_training_reads_all_pages_in_batches_without_sampling(self):
+        images = []
+        for index in range(1, 26):
+            path = f"{WORKSPACE}/uploaded-1/page-{index}.png"
+            images.append({"id": f"p{index}", "name": f"page-{index}.png", "path": path, "position": index})
+            self.store.storage[path] = f"png-{index}".encode()
+        self.store.decks["uploaded-1"]["data"]["images"] = images
+        job = {"scope": "deck", "sourceKind": "uploaded", "deckId": "uploaded-1", "variant": "baseline"}
+        result = ai_reviews._run_deck_full(
+            self.ctx(JUDGE), job, self.store.decks["uploaded-1"], self.store.settings[WORKSPACE],
+            self.store.workspaces[WORKSPACE]["settings"], None,
+        )
+        self.assertEqual(3, len(self.store.model_messages))
+        self.assertTrue(result["coverage"]["complete"])
+        self.assertEqual(25, result["coverage"]["pagesExpected"])
+        self.assertEqual(25, result["coverage"]["pagesEvaluated"])
+        labels = [part["text"] for messages in self.store.model_messages for part in messages[1]["content"] if part.get("type") == "text"]
+        self.assertTrue(any("第1页/25" in label for label in labels))
+        self.assertTrue(any("第13页/25" in label for label in labels))
+        self.assertTrue(any("第25页/25" in label for label in labels))
+        tasks = [json.loads(messages[1]["content"][0]["text"]) for messages in self.store.model_messages]
+        self.assertEqual([1, 13, 25], [task["pageCoverage"]["batchStart"] for task in tasks])
+
+    def test_ppt_training_samples_supports_deck_page_and_cover_scopes(self):
+        all_decks = ai_reviews.handle_ppt_training_samples(self.ctx(JUDGE, query={"scope": "deck", "limit": "2000"}))
+        self.assertEqual(("deck", None, None), (all_decks["scope"], all_decks["deckId"], all_decks["pageId"]))
+        self.assertEqual(1, all_decks["count"])
+        page = ai_reviews.handle_ppt_training_samples(self.ctx(JUDGE, query={"scope": "page", "deckId": "uploaded-1", "pageId": "page-2"}))
+        self.assertEqual(("page", "uploaded-1", "page-2"), (page["scope"], page["deckId"], page["pageId"]))
+        cover = ai_reviews.handle_ppt_training_samples(self.ctx(JUDGE, query={"scope": "cover", "deckId": "uploaded-1"}))
+        self.assertEqual("cover", cover["scope"])
+        self.assertEqual("deck-proxy", cover["samples"][0]["labelScope"])
+        self.assertEqual(127, ai_reviews.handle_ppt_training_counts(self.ctx(JUDGE))["decks"])
+        with self.assertRaisesRegex(ValueError, "整套训练不接受"):
+            ai_reviews.handle_ppt_training_samples(self.ctx(JUDGE, query={"scope": "deck", "deckId": "uploaded-1"}))
 
     def test_preeval_is_hidden_then_unlock_is_exact_granularity_and_reused(self):
         self.prepare_and_run("page", ["g1"])
