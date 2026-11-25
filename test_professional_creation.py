@@ -185,11 +185,10 @@ class CreationTests(unittest.TestCase):
                                        cover_training=True, ppt_training_planning=True)
         request = {"pageCount": 1, "trainingScope": "page", "trainingReference": {"deckId": deck, "positions": [2]}}
         ctx = CreationContext(service, JUDGE, "judge.jwt.fixture", request, {})
-        candidate = {"deckId": deck, "imagePaths": [first], "split": "calibration", "bucket": 2}
+        candidate = {"deckId": deck, "authorizedPagePaths": [first, second], "pageCount": 2, "split": "calibration", "bucket": 2}
         sample = {"deckId": deck, "images": [{"id": "p1", "path": first}, {"id": "p2", "path": second}],
                   "provenance": {"schema": "local-ppt-material-library-import-v1", "pageHashes": [digest, digest]}}
-        ctx.cover_rpc = lambda operation: [candidate]
-        ctx.ppt_rpc = lambda *args, **kwargs: [sample]
+        ctx.ppt_rpc = lambda operation, **kwargs: candidate if operation == "reference" else [sample]
         reads = []
         ctx.storage_get_bounded = lambda path, size: reads.append(path) or valid_png
         evidence, visuals = service._training_comparison(ctx)
@@ -202,6 +201,12 @@ class CreationTests(unittest.TestCase):
         evidence, visuals = service._training_comparison(ctx)
         self.assertEqual([row["position"] for row in evidence["referencePages"]], [1, 2])
         self.assertEqual(len(visuals), 2)
+        candidate["authorizedPagePaths"][1] = None
+        reads.clear()
+        with self.assertRaisesRegex(ValueError, "已授权的预览原图"):
+            service._training_comparison(ctx)
+        self.assertEqual(reads, [first])
+        candidate["authorizedPagePaths"][1] = second
         sample["provenance"]["pageHashes"][1] = "0" * 64
         with self.assertRaisesRegex(ValueError, "哈希不一致"):
             service._training_comparison(ctx)

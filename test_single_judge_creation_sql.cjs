@@ -511,5 +511,55 @@ assert service.handle('POST','/api/ai/generation',source['judge'],'fixture',{'pl
   assert.equal(final.selectedPageId,variant.pageId);
   console.log('PASS M38: pilot opt-in, inventory, group isolation, corrections, style rollback, first generation, score gate, two revisions, selection, preserved first draft');
   console.log('PASS M30: admin/reviewer owner parity, non-owner guards, legacy path, insert-only RLS, M24/M29 references and generation queue');
+
+  // Capture ordinary ranking before M43; the refactor must preserve it byte for byte.
+  await resetRole(db);
+  const WX='70400000-0000-4000-8000-000000000001';
+  await addWorkspace(db,WX,'m43-exact');
+  await addMember(db,WX,OWNER,'admin'); await addMember(db,WX,OTHER,'admin');
+  await query(db,'update public.workspaces set settings=$2 where id=$1',[WX,j({maxScore:5,dimensions:[{id:'visual'},{id:'layout'}]})]);
+  await asService(db);
+  await ownerActivate(db,WX,OWNER);
+  await resetRole(db);
+  await query(db,'insert into guanye_internal.cover_training_settings(workspace_id,enabled) values($1,true)',[WX]);
+  const addTrainingFixture = async (id, {allowed=true, score=5, prefix='01', pages=1}={}) => {
+   const paths=Array.from({length:pages},(_,i)=>previewPath(WX,id,i+1));
+   await addDeck(db,WX,id,{allowed,paths});
+   for(const path of paths) await addStorageObject(db,path);
+   const sha=prefix+crypto.createHash('sha256').update(id).digest('hex').slice(2);
+   await query(db,'insert into guanye_internal.uploaded_source_provenance(deck_id,workspace_id,source_group_sha256) values($1,$2,$3)',[id,WX,sha]);
+   if(score!==null) await db.transaction(async tx=>{
+    await tx.exec("select set_config('guanye.ai_review_internal','on',true)");
+    await query(tx,'insert into public.reviews(workspace_id,deck_id,user_id,data) values($1,$2,$3,$4)',[WX,id,OWNER,j({mode:'deck',scores:{visual:score,layout:score}})]);
+   });
+   return {paths,sha};
+  };
+  for(let i=0;i<20;i++) await addTrainingFixture(`training-top-${i}`);
+  const long=await addTrainingFixture('training-long',{score:4,pages:22});
+  await addTrainingFixture('training-held',{prefix:'00',pages:2});
+  await addTrainingFixture('training-manual',{allowed:false,pages:2});
+  await addTrainingFixture('training-unscored',{score:null,pages:2});
+  const alias=await addTrainingFixture('training-alias',{pages:2});
+  await query(db,'insert into guanye_internal.cover_training_source_review values($1,$2,$3)',[WX,alias.sha,'00'+'f'.repeat(62)]);
+  const ranked=await get(db,'ai_planning_reference_candidates',[WX,20]);
+  assert.equal(ranked.length,20);
+  assert.ok(!ranked.some(row=>row.deckId==='training-long'));
+  await db.exec(fs.readFileSync('cloud/migrations/20261126_43_ppt_training_exact_reference.sql','utf8'));
+  assert.deepEqual(await get(db,'ai_planning_reference_candidates',[WX,20]),ranked);
+  const exact=(id,w=WX)=>get(db,'single_judge_ppt_training_reference',[w,id]);
+  await asAnon(db); await rejects(exact('training-long'),'42501');
+  await asAuthenticated(db,OTHER); await rejects(exact('training-long'),'42501');
+  await asAuthenticated(db,OWNER); await rejects(exact('training-long',W_OTHER),'42501');
+  for(const id of ['training-held','training-manual','training-unscored','training-alias','training-top-0','does-not-exist']) assert.equal(await exact(id),null,id);
+  const longRef=await exact('training-long');
+  assert.equal(longRef.pageCount,22);
+  assert.equal(longRef.split,'calibration');
+  assert.deepEqual(longRef.authorizedPagePaths,long.paths);
+  await resetRole(db);
+  await query(db,"delete from storage.objects where bucket_id='ppt-library' and name=$1",[long.paths[11]]);
+  await asAuthenticated(db,OWNER);
+  const partial=await exact('training-long');
+  assert.deepEqual(partial.authorizedPagePaths,long.paths.map((p,i)=>i===11?null:p));
+  console.log('PASS M43: exact 22-slide reference outside top 20, unchanged ranking, held-out family, missing page, scores and authorization');
  } finally{await db.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

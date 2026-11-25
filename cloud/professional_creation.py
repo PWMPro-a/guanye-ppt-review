@@ -216,8 +216,11 @@ class ProfessionalCreation:
         deck = ai_reviews._require_deck_id(selection["deckId"])
 
         def eligible():
-            return next((r for r in ctx.cover_rpc("references") if r["deckId"] == deck
-                         and r.get("split") == "calibration" and r.get("bucket", 0) > 0), None)
+            row = ctx.ppt_rpc("reference", deck_id=deck)
+            if (isinstance(row, dict) and row.get("deckId") == deck and row.get("split") == "calibration"
+                    and type(row.get("bucket")) is int and row["bucket"] > 0):
+                return row
+            return None
 
         reference = eligible()
         if reference is None:
@@ -240,7 +243,9 @@ class ProfessionalCreation:
                 or (scope == "page" and (len(positions) != 1 or positions[0] == 1))
                 or (scope == "deck" and len(positions) < 2)):
             raise ValueError("来源页必须按页序且不重复；正文选一张非首图，整套选至少两张")
-        if images[0].get("path") != (reference.get("imagePaths") or [None])[0]:
+        authorized_paths = reference.get("authorizedPagePaths")
+        if (reference.get("pageCount") != len(images) or not isinstance(authorized_paths, list)
+                or len(authorized_paths) != len(images)):
             raise ValueError("素材库作品与已授权候选不一致")
         provenance = sample.get("provenance") or {}
         is_local = provenance.get("schema") == "local-ppt-material-library-import-v1"
@@ -252,9 +257,11 @@ class ProfessionalCreation:
                         humanVerified=False if is_local else None)
         for position in positions:
             image = images[position - 1]
-            path = image.get("path")
+            path = image.get("path") or image.get("imagePath") or image.get("storagePath")
             if not isinstance(path, str) or not path.startswith(f"{self.workspace}/{deck}/"):
                 raise ValueError("素材原图路径不属于所选作品")
+            if path != authorized_paths[position - 1]:
+                raise ValueError("所选页不是已授权的预览原图")
             remaining = min(cover_training.MAX_VISUAL_REFERENCE_BYTES, ai_planning._remaining_vision_bytes(visuals))
             if remaining <= 0:
                 raise ValueError("所选原图超出视觉输入总上限")
@@ -462,6 +469,9 @@ class CreationContext:
         if operation == "counts":
             remote = "single_judge_ppt_training_counts"
             value = {"w": self.workspace_id}
+        elif operation == "reference":
+            remote = "single_judge_ppt_training_reference"
+            value = {"w": self.workspace_id, "p_deck_id": params["deck_id"]}
         elif operation == "samples":
             remote = "single_judge_ppt_training_samples"
             value = {"w": self.workspace_id, "p_scope": params["scope"],

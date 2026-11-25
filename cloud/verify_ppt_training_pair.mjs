@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 
 const [scope, casePath, outputPath] = process.argv.slice(2);
@@ -38,14 +39,38 @@ const rows = await post(url, '/rest/v1/rpc/single_judge_ppt_training_samples',
   { w: workspaceId, p_scope: 'deck', p_deck_id: deckId, p_limit: 1 }, { ...headers, apikey: anonKey });
 assert(Array.isArray(rows) && rows.length === 1 && rows[0].deckId === deckId, 'Selected source not found');
 const source = rows[0];
-assert(source.provenance?.schema === 'local-ppt-material-library-import-v1', 'Pair requires an imported local source');
-const expected = positions.map(position => {
+const authorization = await post(url, '/rest/v1/rpc/single_judge_ppt_training_reference',
+  { w: workspaceId, p_deck_id: deckId }, { ...headers, apikey: anonKey });
+assert(authorization?.deckId === deckId && authorization.split === 'calibration' && authorization.bucket > 0,
+  'Selected source is not eligible for PPT training');
+assert(Array.isArray(source.images) && authorization.pageCount === source.images.length
+  && authorization.authorizedPagePaths?.length === source.images.length, 'Mismatched source inventory');
+const isLocal = source.provenance?.schema === 'local-ppt-material-library-import-v1';
+const sourceId = source.provenance?.sourceId ?? null;
+const expected = [];
+for (const position of positions) {
   const image = source.images[position - 1];
-  const sha256 = source.provenance.pageHashes[position - 1];
-  assert(image && /^[0-9a-f]{64}$/.test(sha256), `Missing catalog image or digest at ${position}`);
-  return { pageId: image.id, path: image.path, position, sha256 };
-});
-const report = { schema: 'ppt-training-planning-pair-v1', workspaceId, scope, pageCount, outline, sourceId: source.provenance.sourceId, deckId, expected, runs: [] };
+  const path = image?.path || image?.imagePath || image?.storagePath;
+  assert(image?.id && path?.startsWith(`${workspaceId}/${deckId}/`)
+    && path === authorization.authorizedPagePaths[position - 1], `No authorized original preview at ${position}`);
+  const encodedPath = path.split('/').map(encodeURIComponent).join('/');
+  const response = await fetch(new URL(`/storage/v1/object/authenticated/ppt-library/${encodedPath}`, url),
+    { headers: { ...headers, apikey: anonKey }, redirect: 'error', signal: AbortSignal.timeout(60000) });
+  assert(response.ok && response.body, `Private preview ${position} not readable: HTTP ${response.status}`);
+  const hash = createHash('sha256');
+  let bytes = 0;
+  for await (const chunk of response.body) {
+    bytes += chunk.length;
+    assert(bytes <= 8 * 1024 ** 2, `Preview ${position} exceeds the verifier byte limit`);
+    hash.update(chunk);
+  }
+  assert(bytes > 0, `Empty preview ${position}`);
+  const sha256 = hash.digest('hex');
+  if (isLocal) assert.equal(sha256, source.provenance.pageHashes?.[position - 1], `Catalog digest mismatch at ${position}`);
+  expected.push({ pageId: image.id, path, position, sha256 });
+}
+const report = { schema: 'ppt-training-planning-pair-v1', workspaceId, scope, pageCount, outline, sourceId, deckId,
+  sourcePageCount: source.images.length, sourceScoreSource: authorization.scoreSource, expected, runs: [] };
 const save = flag => writeFile(outputPath, JSON.stringify(report, null, 2) + '\n', { encoding: 'utf8', flag });
 await save('wx');
 const common = { mode: 'content_draft', trainingScope: scope, pageCount, outline };
@@ -69,9 +94,10 @@ for (const arm of ['baseline', 'library-reference']) {
     assert.deepEqual(evidence.referencePages, arm === 'baseline' ? [] : expected);
     if (arm === 'library-reference') {
       assert.equal(evidence.deckId, deckId);
-      assert.equal(evidence.sourceId, source.provenance.sourceId);
-      assert.equal(evidence.scoreProvenance, 'catalog-proxy');
-      assert.equal(evidence.humanVerified, false);
+      assert.equal(evidence.sourceId, sourceId);
+      assert.equal(evidence.sourcePageCount, source.images.length);
+      assert.equal(evidence.scoreProvenance, isLocal ? 'catalog-proxy' : 'library');
+      assert.equal(evidence.humanVerified, isLocal ? false : null);
     }
     run.status = 'verified';
     console.log(JSON.stringify({ arm, planId: response.planId, pageCount, sourcePositions: evidence.referencePages.map(p => p.position) }));

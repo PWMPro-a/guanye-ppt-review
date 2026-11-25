@@ -27,7 +27,8 @@ COVER_PILOT_VERSION='20261123_38_cover_training'
 COVER_HUMAN_FIRST_VERSION='20261123_39_cover_after_human'
 COVER_PROGRESS_VERSION='20261124_40_cover_progress'
 COVER_VISUAL_VERSION='20261124_41_cover_visual_reference'
-COVER_PILOT_VERSIONS=(COVER_PILOT_VERSION,COVER_HUMAN_FIRST_VERSION,COVER_PROGRESS_VERSION,COVER_VISUAL_VERSION)
+PPT_TRAINING_EXACT_VERSION='20261126_43_ppt_training_exact_reference'
+COVER_PILOT_VERSIONS=(COVER_PILOT_VERSION,COVER_HUMAN_FIRST_VERSION,COVER_PROGRESS_VERSION,COVER_VISUAL_VERSION,PPT_TRAINING_EXACT_VERSION)
 MIGRATION_SPECS=(
     ('20261121_01_ai_review_foundation','20261121_01_ai_review_foundation.sql'),
     ('20261121_02_ai_reviews','20261121_02_ai_reviews.sql'),
@@ -69,6 +70,7 @@ MIGRATION_SPECS=(
     (COVER_HUMAN_FIRST_VERSION,'20261123_39_cover_after_human.sql'),
     (COVER_PROGRESS_VERSION,'20261124_40_cover_progress.sql'),
     (COVER_VISUAL_VERSION,'20261124_41_cover_visual_reference.sql'),
+    (PPT_TRAINING_EXACT_VERSION,'20261126_43_ppt_training_exact_reference.sql'),
 )
 HISTORY_DDL=f"""create schema if not exists guanye_internal;
 revoke all on schema guanye_internal from public, anon, authenticated;
