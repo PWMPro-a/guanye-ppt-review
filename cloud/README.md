@@ -26,6 +26,19 @@
 - 正式评分工作台使用 owner 自己的 Supabase 登录身份读写当前队列和已解锁对比，不把服务密钥交给桌面端。上传/生成评分分开；整套与选中页原子保存。改分后新分生效，未选页不变，历史和首次有效 AI 对比不覆盖。首次没匹配到 AI 的单元，不把晚到预评伪装成盲评。
 - 生图队列在已启用的专业工作区内固定为 16 路；M31 在首次启用和升级时修正旧显式 4 路，且不改变非专业工作区和任务数据。专业版运行配置 `workers.intake` 默认为 `true`，可与 `workers.review`、`workers.image` 独立启停；`workers.concurrency` 仍为 16。部署验收仍要核对云端实际容量与本机 Worker 配置。专业版生成引用只选择可验证的原库已授权图片或评分师在确认版明确上传的风格图片；重新领取或请求引用时重验访问条件。
 
+### PPT 训练库（M42）
+
+M42 将训练范围明确分为三条互不混淆的入口：`scope=deck` 读取整套 PPT 的全部页，`scope=page` 读取指定作品的任意单页，`scope=cover` 只读取第一页。整套返回的 `images` 不截断、不抽样；没有真实页级人工分时，页面会显式标记 `labelScope=deck-proxy`，不能把整套分数伪装成页级人工分。
+
+测试库不得用空白夹具代替正式素材。`cloud/import_formal_library.mjs` 使用 Node.js（不依赖 Python）从正式项目读取有完整 `visual` / `layout` 分数的原作品，逐页下载并计算 SHA-256，再经 `single-judge-import` 的 `library-prepare`、signed upload、`library-publish` 写入隔离训练工作区。它保留原作品的全部页面、正式评分和 review provenance，并固定检查当前正式库应有的 127 套有评分作品；当前盘点为 983 页，且必须同时保留低分（≤2）与高分（≥4）。任何缺页、哈希不一致、数量不符或发布不确认都会 fail closed。
+
+运行前只在当前 PowerShell 7 会话设置以下变量，值不要提交、打印、粘贴到聊天或写进仓库：`SOURCE_URL`、`SOURCE_ANON_KEY`、`SOURCE_EMAIL`、`SOURCE_PASSWORD`、`SOURCE_WORKSPACE_ID`、`TARGET_URL`、`TARGET_ANON_KEY`、`TARGET_EMAIL`、`TARGET_PASSWORD`、`TARGET_WORKSPACE_ID`。然后执行：
+
+```powershell
+node cloud/import_formal_library.mjs
+```
+
+重复执行使用稳定的导入作品 ID 和对象路径，服务端发布返回 `idempotent=true` 时不得新增重复作品。上线验收还必须回查：整套/单页/封面三个范围、每套页数、原图 SHA-256、评分高低分共存、127 套与 983 页计数、重复导入无新增、正式库没有写入变化。未完成迁移 42、Edge Function 部署和上述线上回查前，不得宣称测试库已完成导入。
 ### 自动预评：只在评分师的 Windows 电脑安装
 
 1. 在同一项目准备 `single-judge-review-worker` Edge Function；只在函数环境配置 `GUANYE_WORKSPACE_ID` 和单独的 `GUANYE_REVIEW_WORKER_TOKEN`。函数自行验证 Supabase Auth 用户与专职评委身份；不要把服务端 key 给桌面端。真实项目的 Edge 网关、Auth 与私有 Storage 必须先在隔离环境验收。
