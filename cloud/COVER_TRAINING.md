@@ -122,8 +122,21 @@ node cloud/import_formal_library.mjs
 `SOURCE_SERVICE_ROLE_KEY` replaces `SOURCE_ANON_KEY`, `SOURCE_EMAIL`, and `SOURCE_PASSWORD` for read-only source access. The target still requires a workspace member account (`TARGET_EMAIL` / `TARGET_PASSWORD`) because the import function validates a user JWT. Secrets must stay in process environment variables and must never be committed.
 ### 正文与整套策划对照（隔离试点）
 
-- 仅在训练网关同时配置 `GUANYE_COVER_TRAINING_SITE=1` 和 `GUANYE_PPT_TRAINING_PLANNING=1` 时启用后者。不要给正式网关设置，不改生图注册，也不需要新数据库迁移。已有的封面流程不变。
+- 仅在训练网关同时配置 `GUANYE_COVER_TRAINING_SITE=1` 和 `GUANYE_PPT_TRAINING_PLANNING=1` 时启用后者。不要给正式网关设置，不改生图注册。试点须先应用 M43。已有的封面流程不变。
 - 使用 `/training/api/ai/planning/analyze`。正文请求 `trainingScope: "page", pageCount: 1`；整套请求 `trainingScope: "deck", pageCount: 2–30`。`trainingReference: {deckId, positions}` 可指定已授权、非留出且评分至少 4 分的作品和有序的源页序。独立试点先应用 M43：正文和整套按作品 ID 精确核验，不卡封面榜前 20 名；缺少来源组、归为留出组或存储原图未授权的页不能用。正文只选一张非首图，整套至少两张，最多八张原图，不是每张参考图都对应一张生成页。整套不填 `positions` 时按页序等距抽样（含首尾）；字节上限不足则报错，不静默遗漏页。
 - 同题无参考组省略 `trainingReference`；两组都不加入自动候选或旧封面反馈。指定参考组只发送经验证的原图；导入素材的目录分标记为 `catalog-proxy`，并非人工真值。新接口返回的 `pptTrainingEvidence` 应随策划结果一起保存到试点记录，不在可编辑草稿里持久化。
-- 从仓库运行 `./cloud/run_verify_local_training.ps1 -Scope page -CasePath <case.json> -OutputPath <new-output.json>` 验收正文；整套改用 `-Scope deck`。输入 JSON：`outline`、`pageCount`、本地导入来源在测试库中的 `deckId`、`positions`。用现有试点调用器的 DPAPI 方式将评审账号密码仅注入该 Node 子进程环境的 `TARGET_PASSWORD`；不要写入用例或证据文件。输出包括请求前快照、两组策划与校验结果。观察超时后先查历史，不盲目补发。
+- 从仓库运行 `./cloud/run_verify_local_training.ps1 -Scope page -CasePath <case.json> -OutputPath <new-output.json>` 验收正文；整套改用 `-Scope deck`。输入 JSON：`outline`、`pageCount`、已授权来源在测试库中的 `deckId`、`positions`。用现有试点调用器的 DPAPI 方式将评审账号密码仅注入该 Node 子进程环境的 `TARGET_PASSWORD`；不要写入用例或证据文件。输出包括请求前快照、两组策划与校验结果。观察超时后先查历史，不盲目补发。
 - 这里验收的是 Sol 策划与素材隔离，不证明实际成图、人工高分或反馈增益。整套成图和留出盲评是后续独立验收项。
+### 真实成图盲评汇总
+
+以下工具只汇总已收集的人评，不会调用模型、提交评分或做模型微调：
+
+```powershell
+node cloud/summarize_ppt_training_quality.mjs <blind-scores.json> <new-summary.json>
+node --test test_ppt_training_quality.mjs
+```
+
+- 输入根节点：`schema: "ppt-training-blind-scores-v1"`、`trainingFamilies`（本轮所有参考和反馈来源的家族 ID）和 `trials`。每条试验固定题目、模型和参数，记录 `scope`（`cover`、`page` 或 `deck`）、`topic`、`holdoutFamily`、`pageCount`、`model`、`settingsId` 和 `blind: true`。整套试验要求 20–30 页；逐页检查漏页和顺序后再登记。
+- 先为三组真实成品分配随机盲码并让评分者独立给分，不显示版本、参考来源或 AI 分。分数锁定后再按私下保管的对应表填写 `candidates`：`arm`（`baseline`、`reference`、`confirmed-feedback`）、`blindId`、`artifactSha256`、`pages` 和 `scores: {visual, layout, match}`（均为 0–5）。反馈组必须附 `feedbackConfirmationId`。失败或缺少基线的题另行记录，不用补造分数；报告结果时同时披露原计划题目数、缺失及排除原因。
+- 按来源家族等权汇总。每个范围分别报告参考增益、确认反馈增益、退步次数及高分比例。预设探索门槛：至少 5 个独立留出家族，两步视觉和排版平均增益各至少 0.10、过半家族改善、内容匹配无退步，且反馈组三项均至少 4 分的家族等权比例不少于 80%。不是统计显著性证明；输入的盲评、来源、哈希和评分仍须和真实记录核对。
+- 历史湿地封面没有无参考基线，不能作为完整三组试验；实际成品和评分读回显示，改稿的视觉/排版首评均比首稿低 0.25 分，选择记录保留首稿。此反例应与后续完整对照分开披露，不能用另一主题的高分给它补基线。

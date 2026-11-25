@@ -90,6 +90,9 @@ jobs:
         timeout-minutes: 5
         run: mkdir -p .test-output/sql && npm install --prefix .test-output/sql --no-audit --no-fund @electric-sql/pglite@0.5.17
 
+      - name: Run PPT training quality tests
+        run: node --test test_ppt_training_quality.mjs
+
       - name: Run all root CJS test files
         timeout-minutes: 20
         shell: bash
