@@ -120,3 +120,10 @@ node cloud/import_formal_library.mjs
 ```
 
 `SOURCE_SERVICE_ROLE_KEY` replaces `SOURCE_ANON_KEY`, `SOURCE_EMAIL`, and `SOURCE_PASSWORD` for read-only source access. The target still requires a workspace member account (`TARGET_EMAIL` / `TARGET_PASSWORD`) because the import function validates a user JWT. Secrets must stay in process environment variables and must never be committed.
+### 正文与整套策划对照（隔离试点）
+
+- 仅在训练网关同时配置 `GUANYE_COVER_TRAINING_SITE=1` 和 `GUANYE_PPT_TRAINING_PLANNING=1` 时启用后者。不要给正式网关设置，不改生图注册，也不需要新数据库迁移。已有的封面流程不变。
+- 使用 `/training/api/ai/planning/analyze`。正文请求 `trainingScope: "page", pageCount: 1`；整套请求 `trainingScope: "deck", pageCount: 2–30`。`trainingReference: {deckId, positions}` 可指定已授权、非留出候选作品和有序的源页序。正文只选一张非首图，整套至少两张，最多八张原图，不是每张参考图都对应一张生成页。整套不填 `positions` 时按页序等距抽样（含首尾）；字节上限不足则报错，不静默遗漏页。
+- 同题无参考组省略 `trainingReference`；两组都不加入自动候选或旧封面反馈。指定参考组只发送经验证的原图；导入素材的目录分标记为 `catalog-proxy`，并非人工真值。新接口返回的 `pptTrainingEvidence` 应随策划结果一起保存到试点记录，不在可编辑草稿里持久化。
+- 从仓库运行 `./cloud/run_verify_local_training.ps1 -Scope page -CasePath <case.json> -OutputPath <new-output.json>` 验收正文；整套改用 `-Scope deck`。输入 JSON：`outline`、`pageCount`、本地导入来源在测试库中的 `deckId`、`positions`。用现有试点调用器的 DPAPI 方式将评审账号密码仅注入该 Node 子进程环境的 `TARGET_PASSWORD`；不要写入用例或证据文件。输出包括请求前快照、两组策划与校验结果。观察超时后先查历史，不盲目补发。
+- 这里验收的是 Sol 策划与素材隔离，不证明实际成图、人工高分或反馈增益。整套成图和留出盲评是后续独立验收项。

@@ -59,8 +59,9 @@ GENERATION_READS = {
 
 
 class ProfessionalCreation:
-    def __init__(self, config, model_key, *, transport=None, chat=None, cover_training=False):
+    def __init__(self, config, model_key, *, transport=None, chat=None, cover_training=False, ppt_training_planning=False):
         self.cover_training = cover_training
+        self.ppt_training_planning = ppt_training_planning and cover_training
         self.config = config
         self.workspace = config["workspaceId"]
         self.router = Router()
@@ -158,7 +159,12 @@ class ProfessionalCreation:
             if not self.cover_training:
                 raise ImportErrorResponse(404, "本机未启用封面训练")
             return self._cover(ctx, path)
-        if (path == ANALYZE and self.cover_training and type(body.get("pageCount")) is int
+        comparison = path == ANALYZE and ("trainingScope" in body or "trainingReference" in body)
+        if comparison:
+            if not self.ppt_training_planning:
+                raise ValueError("本机尚未启用整套及正文页试点策划")
+            ctx.training_comparison = self._training_comparison(ctx)
+        elif (path == ANALYZE and self.cover_training and type(body.get("pageCount")) is int
                 and body["pageCount"] == 1):
             ctx.cover_style = ctx.cover_rpc("style")
             if not isinstance(ctx.cover_style, dict):
@@ -189,6 +195,80 @@ class ProfessionalCreation:
             if plan_id:
                 result["coverStyleEvidence"] = ctx.cover_rpc("plan_visual", p_plan_id=plan_id)
         return result if isinstance(result, tuple) else (200, result)
+
+    def _training_comparison(self, ctx):
+        body = ctx.body
+        scope, count = body.get("trainingScope"), body.get("pageCount")
+        if type(count) is not int or not ((scope == "page" and count == 1)
+                or (scope == "deck" and 2 <= count <= ai_planning.MAX_PLAN_PAGES)):
+            raise ValueError("正文页需要 1 页，整套需要 2–30 页")
+        if (body.get("mode", "content_draft") != "content_draft" or "reference_deck_id" in body
+                or any(body.get(k) for k in ("referenceImages", "reference_images", "styleFiles", "style_files"))):
+            raise ValueError("试点对照不接受上传的风格图")
+        selection = body.get("trainingReference")
+        evidence = {"scope": scope, "arm": "baseline", "referencePages": [], "automaticReferences": False}
+        visuals = []
+        if selection is None:
+            return evidence, visuals
+        if (not isinstance(selection, dict) or "deckId" not in selection
+                or not selection.keys() <= {"deckId", "positions"}):
+            raise ValueError("素材参考需要 deckId，可指定来源页序 positions")
+        deck = ai_reviews._require_deck_id(selection["deckId"])
+
+        def eligible():
+            return next((r for r in ctx.cover_rpc("references") if r["deckId"] == deck
+                         and r.get("split") == "calibration" and r.get("bucket", 0) > 0), None)
+
+        reference = eligible()
+        if reference is None:
+            raise ValueError("所选作品不是已授权的非留出参考候选")
+        samples = ctx.ppt_rpc("samples", scope="deck", deck_id=deck, limit=1)
+        if not isinstance(samples, list) or len(samples) != 1 or samples[0].get("deckId") != deck:
+            raise ValueError("素材库作品已不可用")
+        sample = samples[0]
+        images = sample.get("images")
+        if not isinstance(images, list) or len(images) < 2:
+            raise ValueError("正文及整套训练需要包含正文页的素材")
+        positions = selection.get("positions")
+        max_images = ai_planning.MAX_VISION_IMAGES
+        if positions is None and scope == "deck":
+            size = min(len(images), max_images)
+            positions = [1 + i * (len(images) - 1) // (size - 1) for i in range(size)]
+        if (not isinstance(positions, list) or not 1 <= len(positions) <= max_images
+                or any(type(p) is not int or not 1 <= p <= len(images) for p in positions)
+                or positions != sorted(set(positions))
+                or (scope == "page" and (len(positions) != 1 or positions[0] == 1))
+                or (scope == "deck" and len(positions) < 2)):
+            raise ValueError("来源页必须按页序且不重复；正文选一张非首图，整套选至少两张")
+        if images[0].get("path") != (reference.get("imagePaths") or [None])[0]:
+            raise ValueError("素材库作品与已授权候选不一致")
+        provenance = sample.get("provenance") or {}
+        is_local = provenance.get("schema") == "local-ppt-material-library-import-v1"
+        hashes = provenance.get("pageHashes")
+        if is_local and (not isinstance(hashes, list) or len(hashes) != len(images)):
+            raise ValueError("本地导入素材缺少完整的原图哈希")
+        evidence.update(arm="library-reference", deckId=deck, sourceId=provenance.get("sourceId"),
+                        sourcePageCount=len(images), scoreProvenance="catalog-proxy" if is_local else "library",
+                        humanVerified=False if is_local else None)
+        for position in positions:
+            image = images[position - 1]
+            path = image.get("path")
+            if not isinstance(path, str) or not path.startswith(f"{self.workspace}/{deck}/"):
+                raise ValueError("素材原图路径不属于所选作品")
+            remaining = min(cover_training.MAX_VISUAL_REFERENCE_BYTES, ai_planning._remaining_vision_bytes(visuals))
+            if remaining <= 0:
+                raise ValueError("所选原图超出视觉输入总上限")
+            image_bytes = ctx.storage_get_bounded(path, remaining)
+            mime, digest = cover_training.original_visual(image_bytes)
+            if is_local and digest != hashes[position - 1]:
+                raise ValueError("素材原图与导入目录哈希不一致")
+            evidence["referencePages"].append({"pageId": image.get("id"), "position": position,
+                                               "path": path, "sha256": digest})
+            visuals.append({"label": f"素材库参考原图：源作品第 {position} 页（只学版式）",
+                            "mime_type": mime, "bytes": image_bytes})
+        if eligible() != reference or ctx.ppt_rpc("samples", scope="deck", deck_id=deck, limit=1) != samples:
+            raise ValueError("素材授权或版本已变化；未发送 Sol")
+        return evidence, visuals
 
     def _ppt_training(self, ctx, path):
         if path == PPT_TRAINING_COUNTS:
@@ -301,7 +381,8 @@ def configure_training_site(router, gateway):
         raise GatewayConfigError("封面训练站需要已配置的 gpt-6.2-sol")
     service = ProfessionalCreation({"url": config.supabase_url, "anonKey": config.supabase_anon_key,
                                     "workspaceId": config.workspace_id}, "", transport=gateway.transport,
-                                   chat=gateway.chat_json, cover_training=True)
+                                   chat=gateway.chat_json, cover_training=True,
+                                   ppt_training_planning=config.ppt_training_planning)
     model_slot = BoundedSemaphore(1)
     artifact_slots = BoundedSemaphore(4)
     model_paths = {ANALYZE, COVER + "/suggest", "/api/ai/training/cover-pair"}
@@ -321,12 +402,14 @@ def configure_training_site(router, gateway):
                     if not acquired:
                         return 429, {"error": "训练站任务繁忙，请稍后再试", "code": "busy"}
                 if method == "POST" and path.startswith("/api/ai/planning/"):
-                    if path == ANALYZE and (type(ctx.body.get("pageCount")) is not int or ctx.body["pageCount"] != 1):
+                    expanded = config.ppt_training_planning and "trainingScope" in ctx.body
+                    if path == ANALYZE and not expanded and (type(ctx.body.get("pageCount")) is not int or ctx.body["pageCount"] != 1):
                         raise ValueError("封面训练站只接受单页策划")
                     if path != ANALYZE:
                         draft = ctx.body.get("draft")
                         pages = draft.get("pages") if isinstance(draft, dict) else None
-                        if not isinstance(pages, list) or len(pages) != 1:
+                        max_pages = ai_planning.MAX_PLAN_PAGES if config.ppt_training_planning else 1
+                        if not isinstance(pages, list) or not 1 <= len(pages) <= max_pages:
                             raise ValueError("封面训练站只接受单页策划")
                     if service._json(ctx.token, "POST", "/rest/v1/rpc/single_judge_cover_style",
                                      value={"w": service.workspace}) is None:

@@ -231,6 +231,7 @@ class GatewayConfig:
     model_api_key: str = field(default="", repr=False)
     worker_token: str = field(default="", repr=False)
     cover_training_site: bool = False
+    ppt_training_planning: bool = False
 
     def __post_init__(self):
         if self.storage_bucket != STORAGE_BUCKET:
@@ -288,6 +289,7 @@ class GatewayConfig:
             model_api_key=_env_text("GUANYE_MODEL_API_KEY") or _env_text("GUANYE_AI_API_KEY"),
             worker_token=_env_text("GUANYE_WORKER_TOKEN"),
             cover_training_site=_env_text("GUANYE_COVER_TRAINING_SITE") == "1",
+            ppt_training_planning=_env_text("GUANYE_PPT_TRAINING_PLANNING") == "1",
         )
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):

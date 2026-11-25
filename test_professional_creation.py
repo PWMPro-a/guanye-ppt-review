@@ -1,5 +1,6 @@
 """Exercise the production loopback HTTP adapter with controlled cloud/model fixtures."""
 import base64
+from io import BytesIO
 import hashlib
 import http.client
 import json
@@ -7,9 +8,11 @@ from pathlib import Path
 from threading import Thread
 import unittest
 
+from PIL import Image
+
 from cloud.ai_gateway import HTTPResponse
 from cloud.local_professional import ProfessionalServer
-from cloud.professional_creation import CreationContext, ProfessionalCreation
+from cloud.professional_creation import ANALYZE, CreationContext, ProfessionalCreation
 
 WORKSPACE = "70100000-0000-4000-8000-000000000001"
 JUDGE = "70100000-0000-4000-8000-000000000004"
@@ -150,6 +153,61 @@ class CreationTests(unittest.TestCase):
         self.assertNotIn(b"sensitive upstream", error)
         self.assertEqual(self.request("POST", "/api/ai/generation/retry", body={"job_id": JOB, "page_ids": [PAGE, JOB]})[0], 400)
         self.assertFalse(self.cloud.messages)
+
+    def test_ppt_training_comparison_is_opt_in_and_baseline_has_no_references(self):
+        request = {"mode": "content_draft", "pageCount": 1, "trainingScope": "page", "outline": "正文试验"}
+        with self.assertRaisesRegex(ValueError, "尚未启用"):
+            self.service.handle("POST", ANALYZE, JUDGE, "judge.jwt.fixture", request, {})
+
+        def chat(messages):
+            self.cloud.messages.append(messages)
+            return {"title": "单页", "pages": [{"title": "正文", "narrativeRole": "content"}]}
+
+        service = ProfessionalCreation(CONFIG, "", transport=self.cloud, chat=chat,
+                                       cover_training=True, ppt_training_planning=True)
+        status, response = service.handle("POST", ANALYZE, JUDGE, "judge.jwt.fixture", request, {})
+        self.assertEqual(status, 200)
+        self.assertEqual(response["plan"]["pages"][0]["narrativeRole"], "content")
+        self.assertEqual(response["referenceCandidates"], [])
+        self.assertEqual(response["pptTrainingEvidence"], {"scope": "page", "arm": "baseline",
+                         "referencePages": [], "automaticReferences": False})
+        self.assertFalse(any(part.get("type") == "image_url" for part in self.cloud.messages[0][1]["content"]))
+        self.assertEqual([c[1].rsplit("/", 1)[-1] for c in self.cloud.calls], ["single_judge_planning_save"])
+
+    def test_ppt_training_uses_exact_source_page_and_rejects_held_out_or_changed_bytes(self):
+        deck = "fixture-deck"
+        first, second = (f"{WORKSPACE}/{deck}/preview/{n}.png" for n in (1, 2))
+        picture = BytesIO()
+        Image.new("RGB", (32, 18), "#345678").save(picture, "PNG")
+        valid_png = picture.getvalue()
+        digest = hashlib.sha256(valid_png).hexdigest()
+        service = ProfessionalCreation(CONFIG, "", transport=self.cloud, chat=self.cloud.chat,
+                                       cover_training=True, ppt_training_planning=True)
+        request = {"pageCount": 1, "trainingScope": "page", "trainingReference": {"deckId": deck, "positions": [2]}}
+        ctx = CreationContext(service, JUDGE, "judge.jwt.fixture", request, {})
+        candidate = {"deckId": deck, "imagePaths": [first], "split": "calibration", "bucket": 2}
+        sample = {"deckId": deck, "images": [{"id": "p1", "path": first}, {"id": "p2", "path": second}],
+                  "provenance": {"schema": "local-ppt-material-library-import-v1", "pageHashes": [digest, digest]}}
+        ctx.cover_rpc = lambda operation: [candidate]
+        ctx.ppt_rpc = lambda *args, **kwargs: [sample]
+        reads = []
+        ctx.storage_get_bounded = lambda path, size: reads.append(path) or valid_png
+        evidence, visuals = service._training_comparison(ctx)
+        self.assertEqual(reads, [second])
+        self.assertEqual(evidence["referencePages"], [{"pageId": "p2", "position": 2, "path": second, "sha256": digest}])
+        self.assertEqual(evidence["scoreProvenance"], "catalog-proxy")
+        self.assertIs(evidence["humanVerified"], False)
+        self.assertEqual(visuals[0]["bytes"], valid_png)
+        ctx.body = {"pageCount": 8, "trainingScope": "deck", "trainingReference": {"deckId": deck}}
+        evidence, visuals = service._training_comparison(ctx)
+        self.assertEqual([row["position"] for row in evidence["referencePages"]], [1, 2])
+        self.assertEqual(len(visuals), 2)
+        sample["provenance"]["pageHashes"][1] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "哈希不一致"):
+            service._training_comparison(ctx)
+        candidate["split"] = "holdout"
+        with self.assertRaisesRegex(ValueError, "非留出"):
+            service._training_comparison(ctx)
 
     def test_legacy_snapshot_and_outside_storage_cannot_be_used(self):
         ctx = CreationContext(self.service, JUDGE, "judge.jwt.fixture", {}, {})
