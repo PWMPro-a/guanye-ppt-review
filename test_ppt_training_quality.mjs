@@ -50,3 +50,62 @@ test('reused bytes cannot count as a distinct candidate or topic',()=>{
  first.candidates[0].artifactSha256=first.candidates[1].artifactSha256;
  assert.throws(()=>evaluate([first]),/reused artifact/i);
 });
+
+
+test('failed or unresolved runs stay in the high-score denominator without invented scores',()=>{
+ const trials=Array.from({length:5},(_,i)=>trial('deck',`planned-${i}`,`family-${i}`));
+ trials[4].candidates[2]={arm:'confirmed-feedback',blindId:'pending-feedback',status:'not-confirmed',failureReason:'Provider response not observed'};
+ trials[4].candidates[0]={arm:'baseline',blindId:'failed-baseline',status:'failed',failureReason:'Only 21 of 22 pages rendered'};
+ const r=evaluate(trials).scopes.deck;
+ assert.equal(r.trials,5);
+ assert.equal(r.baseline.failed,1);
+ assert.equal(r.feedback.completed,4);
+ assert.equal(r.feedback.notConfirmed,1);
+ assert.equal(r.feedback.highScoreShare,0.8);
+ assert.equal(r.reference.missingPairs,1);
+ assert.equal(r.feedback.comparableTrials,4);
+ assert.equal(r.feedback.meanGain.visual,0.25);
+ assert.equal(r.meetsPilotThreshold,false);
+});
+test('an incomplete arm cannot have an invented score or claim a verified artifact',()=>{
+ const t=trial('page','missing','family');
+ Object.assign(t.candidates[1],{status:'failed',failureReason:'No usable preview'});
+ assert.throws(()=>evaluate([t]),/must not have scores/);
+ delete t.candidates[1].scores;
+ assert.throws(()=>evaluate([t]),/verified artifact/);
+ delete t.candidates[1].artifactSha256;
+ delete t.candidates[1].pages;
+ delete t.candidates[1].failureReason;
+ assert.throws(()=>evaluate([t]),/requires a reason/);
+});
+
+
+test('preregistration prevents favorable-only subsampling and outline or family substitution',()=>{
+ const t=trial('deck','library','prospective-library');
+ const other=trial('page','repair','prospective-repair');
+ const outline='A library program with explicit service boundaries.';
+ const outlineSha256=createHash('sha256').update(outline).digest('hex');
+ const protocol={schema:'ppt-training-prospective-protocol-v1',id:'pilot-1',cases:[t,other].map(x=>({
+  scope:x.scope,topic:x.topic,holdoutFamily:x.holdoutFamily,pageCount:x.pageCount,outline,
+ }))};
+ const results={schema:'ppt-training-blind-scores-v1',trainingFamilies:[],trials:[t,other].map(x=>({...x,outlineSha256}))};
+ assert.deepEqual(summarize(results,protocol).protocolAudit,{id:'pilot-1',cases:2});
+ assert.throws(()=>summarize({...results,trials:results.trials.slice(0,1)},protocol),/every planned case/);
+ for(const change of [{pageCount:21},{holdoutFamily:'different'},{outlineSha256:'0'.repeat(64)}]) {
+  const changed=structuredClone(results);
+  if(change.pageCount) for(const candidate of changed.trials[0].candidates) candidate.pages=change.pageCount;
+  Object.assign(changed.trials[0],change);
+  assert.throws(()=>summarize(changed,protocol),/does not match preregistration/);
+ }
+});
+test('planned cases without any model dispatch are explicitly not run',()=>{
+ const t=trial('cover','not-run','prospective');
+ t.blind=null;
+ t.candidates=t.candidates.map(({arm,blindId})=>({arm,blindId,status:'not-run',failureReason:'Model dispatch unavailable'}));
+ const r=evaluate([t]).scopes.cover;
+ assert.equal(r.baseline.notRun,1);
+ assert.equal(r.baseline.failed,0);
+ assert.equal(r.feedback.highScoreShare,0);
+ assert.equal(r.reference.meanGain,null);
+ assert.equal(r.meetsPilotThreshold,false);
+});

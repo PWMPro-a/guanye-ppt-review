@@ -132,11 +132,64 @@ node cloud/import_formal_library.mjs
 以下工具只汇总已收集的人评，不会调用模型、提交评分或做模型微调：
 
 ```powershell
-node cloud/summarize_ppt_training_quality.mjs <blind-scores.json> <new-summary.json>
+node cloud/summarize_ppt_training_quality.mjs <blind-scores.json> <new-summary.json> [protocol.json]
 node --test test_ppt_training_quality.mjs
 ```
 
 - 输入根节点：`schema: "ppt-training-blind-scores-v1"`、`trainingFamilies`（本轮所有参考和反馈来源的家族 ID）和 `trials`。每条试验固定题目、模型和参数，记录 `scope`（`cover`、`page` 或 `deck`）、`topic`、`holdoutFamily`、`pageCount`、`model`、`settingsId` 和 `blind: true`。整套试验要求 20–30 页；逐页检查漏页和顺序后再登记。
-- 先为三组真实成品分配随机盲码并让评分者独立给分，不显示版本、参考来源或 AI 分。分数锁定后再按私下保管的对应表填写 `candidates`：`arm`（`baseline`、`reference`、`confirmed-feedback`）、`blindId`、`artifactSha256`、`pages` 和 `scores: {visual, layout, match}`（均为 0–5）。反馈组必须附 `feedbackConfirmationId`。失败或缺少基线的题另行记录，不用补造分数；报告结果时同时披露原计划题目数、缺失及排除原因。
+- 先为三组真实成品分配随机盲码并让评分者独立给分，不显示版本、参考来源或 AI 分。分数锁定后再按私下保管的对应表填写 `candidates`：`arm`（`baseline`、`reference`、`confirmed-feedback`）、`blindId`、`artifactSha256`、`pages` 和 `scores: {visual, layout, match}`（均为 0–5）。反馈组必须附 `feedbackConfirmationId`。 Keep unsuccessful or unresolved arms in candidates with a unique blindId, status failed, not-confirmed, or not-run, and failureReason. Omit scores, pages, and artifactSha256 for these arms. All registered trials count toward the high-score rate; gains use verified pairs only, and missing pairs prevent a pass. Do not fill a missing historical baseline with a different topic or invented scores. Use `blind: null` when there are no scored arms and no blind review has occurred. With a prospective protocol, record the UTF-8 SHA-256 of the registered outline as `outlineSha256` on each trial. The summary rejects omitted or replaced cases and records the protocol file hash; archive that hash before dispatch.
 - 按来源家族等权汇总。每个范围分别报告参考增益、确认反馈增益、退步次数及高分比例。预设探索门槛：至少 5 个独立留出家族，两步视觉和排版平均增益各至少 0.10、过半家族改善、内容匹配无退步，且反馈组三项均至少 4 分的家族等权比例不少于 80%。不是统计显著性证明；输入的盲评、来源、哈希和评分仍须和真实记录核对。
 - 历史湿地封面没有无参考基线，不能作为完整三组试验；实际成品和评分读回显示，改稿的视觉/排版首评均比首稿低 0.25 分，选择记录保留首稿。此反例应与后续完整对照分开披露，不能用另一主题的高分给它补基线。
+
+
+### Package a 20-30 page blind-review candidate
+
+Use Node.js and the workspace runtime packages (`pptxgenjs`, `sharp`, `jszip`, `xml-js`). Point `NODE_PATH` at the bundled `node_modules` directory returned by the workspace dependency tool, then run:
+
+```powershell
+node cloud/package_ppt_training_deck.mjs <manifest.json> <new.pptx>
+node --test test_ppt_training_deck_package.mjs test_ppt_training_quality.mjs
+```
+
+The UTF-8 manifest uses `schema: "ppt-training-generated-pages-v1"`, `pageCount`, and `pages`. Record one row for every download, in planned slide order: `{ "position": 1, "file": "slide-01.png", "bytes": 123, "sha256": "<64 lowercase hex digits>" }`. Keep the PNG files next to the manifest. A missing, repeated, unreadable, hash-mismatched, or non-16:9 page prevents export; the tool never crops or stretches an image to make it pass. Confirm `pageCount` against the original plan separately.
+
+The exporter writes the raster-slide PPTX and a `.pptx.evidence.json` sidecar. It resolves the PowerPoint slide and media relationships in presentation order and verifies the embedded images byte for byte. This proves packaging, not visual quality, readable text, data accuracy, editability, or model provenance. Keep the generation request and response evidence separately, and open the deck for a visual check before scheduling human blind review. An existing `ppt-training-local-deck-render-v1` manifest only works with `--fixture`; its output is not a generated candidate and must not enter the score report.
+
+
+### 按实际回执打包整套试验稿
+
+正式对照优先使用回执模式，不要从散落的 PNG 手工填成「已生成」。将 `ppt-training-direct-deck-plan-v1` 规格放在该试验的私有目录，和每页的 dispatch、result 与 PNG 同级。计划需记录登记大纲摘要 `outlineSha256`、`pageCount`、`model`、`size`、`quality`、`responseFormat`，以及按页排列的 `position`、`basePromptSha256`、`reference`。生图前留存计划文件摘要。
+
+```powershell
+node cloud/package_ppt_training_deck.mjs <deck-plan.json> <new.pptx> --receipts=baseline
+```
+
+另两组分别使用 `--receipts=reference`、`--receipts=confirmed-feedback` 和不同输出文件名。打包器只接受齐全、与同一计划一致的成功回执；反馈稿还需同目录中的参考稿回执和原始 PNG，供核对实际改稿输入的摘要。证据附页保存计划、请求和结果摘要。此检查只证明本地记录及 PPTX 内页的一致性，不是站点签名、人评或真实出图的独立证明。样例和模拟回执不得送入正式评分。只要任一页未确认，不要重新提交该页来补齐，先核对站点终态。
+
+### 首轮正文基线：本机无回显入口
+
+在已验证的 PowerShell 7 中运行 `cloud/start_ppt_pilot_baseline.ps1`，默认只预检隔离配置、Node/Sharp 与已有回执，不提示输入密钥，也不调用站点。准备好已轮换的站点 API Key 后，显式加 `-Submit`，在本机隐藏输入框填写。这个入口只提交《让流动书架走进社区》的单张无参考正文基线（2.6 Sunburst、16:9、Medium，目录估价 0.013 积分），不读取评审密码，不自动重试。若已存在本轮回执，应先核对站点终态。同题参考和反馈稿由专门的规格和授权流程处理。
+
+### Local one-page image probe (not the deployed queue)
+
+`cloud/run_ppt_training_page.mjs` is a single-dispatch Node.js verifier for the isolated pilot. It does not configure credentials, start a Worker, modify the database, or enable ordinary generation. Use a private, existing directory for one topic and leave its evidence files intact. The operator supplies `GUANYE_PILOT_IMAGE_KEY` and, for references, `GUANYE_PILOT_REVIEWER_PASSWORD` through a secure runtime environment. Never place them in commands, specs or Git. The script requires the workspace runtime `sharp` package.
+
+```powershell
+node cloud/run_ppt_training_page.mjs <spec.json> <private-case-dir> --submit-one-pilot-image
+```
+
+The JSON spec contains `scope` (`cover`, `page`, `deck`), `arm` (`baseline`, `reference`, `confirmed-feedback`), output `position`, `pageCount`, and the approved page `prompt`. A referenced arm also needs `reference: {deckId,pageId,position,sha256}`: source and output positions are independent. The optional `pageId` can be left out if the deck, source position and exact SHA-256 are already verified; the runner records the page ID returned by the isolated library, and rechecks it before dispatch. These values bind the private source bytes against the current M43 permission. For feedback, also specify `feedback: {confirmationId,parentSha256,keep,change,doNotChange}`. The parent must be the corresponding verified reference-arm PNG; the runner checks its digest, the same base prompt, and the same original source, then sends the verified reference-arm PNG as the edit input with the declared instructions. It rechecks the library authorization but does not send the original library page again. Local confirmation is not a verified human identity; retain the independent human confirmation record separately.
+
+The text-only arm uses `/v1/images/generations` and image-reference arms use `/v1/images/edits`. The route difference is a possible confound, so comparison measures these end-to-end workflows, not the isolated causal effect of extra pixels. The pilot defaults to `gpt-image-2.6-sunburst`; set `"model": "gpt-image-2.5-sunburst"` explicitly in a separate experiment if needed. Keep the model fixed across paired arms. The channel catalog advertises 1536x864 and `response_format: "b64_json"`; the runner also sends `model_config_key` equal to the selected model so the paired arm stays on one explicit configuration. A response marked as content-policy blocked is retained as a blocked run, never a generated artifact. HTTP failures retain the status and a bounded, allowlisted category, never the raw response body. The default response format is `b64_json`. To test URL delivery in a separate run, set `"responseFormat": "url"` on each paired spec. The runner accepts only HTTPS URLs on the channel origin under `/api/images/file/`, does not attach credentials or follow redirects, and does not retain signed URLs in receipts. It applies the same PNG, byte-limit and aspect-ratio checks to downloaded results. The runner does not switch response formats or retry automatically. The runner saves an attempt, a pre-dispatch receipt and a result independently; a missing result after dispatch must not trigger a retry. A 3:2 image is diagnostic only. Do not promote a mock response, a probe, or a read-only model-list response to a deployed queue or human quality pass.
+
+For a new direct trial against a site key that controls delivery, set `"responseFormat": "key-default"` across all arms. This omits `response_format` on the wire, accepts inline PNG or the validated same-origin asset route, and records the observed `deliveredFormat`. To match an explicit Medium trial, set `"quality": "medium"` consistently; do not merge older outcomes with unspecified quality into that trial. The synchronous request has a 600-second client deadline (including its response stream). A client timeout still does not prove the server stopped; consult the provider log before deciding on a separate attempt. Website trials use the site's asynchronous image-task route and must be tracked separately. Key-default delivery and a longer deadline do not establish the cause of prior HTTP 400 responses or fix an upstream model timeout.
+
+### 交给独立评审的盲评包（本地，不联网）
+
+```powershell
+node cloud/publish_ppt_training_blind_packet.mjs <plan.json> <shared-brief.txt> <new-private-packet-directory>
+```
+
+用试验原目录下的计划；封面、正文用 `ppt-training-direct-single-plan-v1`（明确 `scope`、`pageCount: 1` 及唯一计划页），22 页整套用既有 `ppt-training-direct-deck-plan-v1`。共同题目须与登记大纲完全一致，包括换行；发布器会核对 `outlineSha256`。三组回执或全部页缺一不可，校验失败不会发布评审清单。仅使用独立核过站点终态的真实成品；不要拿测试夹具和原素材凑数，本地回执也不是站点签名。
+
+只把 `reviewer/` 发给评审，其中是随机盲码、共同题目和成品。`private/mapping.json` 由试验主持人保管，不随包发送；其中记录原成品和送审副本的摘要、回执摘要与反馈确认 ID。评审在不知道版本的情况下独立填写视觉、排版、内容匹配三项 0–5 分；整套另核页序及风格一致性。锁定原始人工分后，再按盲码连接到汇总输入。未出图或未确认的试验保留在失败／未运行台账，不能因无法出包而从分母删除。
